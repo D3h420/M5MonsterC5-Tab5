@@ -17,6 +17,7 @@
 #include "driver/gpio.h"
 #include "bsp/m5stack_tab5.h"
 #include "lvgl.h"
+#include "lvgl_memory.h"
 
 // ESP-Hosted includes for WiFi via ESP32C6 SDIO
 #include "esp_hosted.h"
@@ -136,7 +137,20 @@ static lv_obj_t *deauth_btn = NULL;
 static lv_obj_t *deauth_btn_label = NULL;
 
 // Scan & Attack deauth popup
+static lv_obj_t *scan_deauth_overlay = NULL;  // Modal overlay
 static lv_obj_t *scan_deauth_popup_obj = NULL;
+
+// Evil Twin attack state
+static lv_obj_t *evil_twin_overlay = NULL;  // Modal overlay
+static lv_obj_t *evil_twin_popup_obj = NULL;
+static lv_obj_t *evil_twin_network_dropdown = NULL;
+static lv_obj_t *evil_twin_html_dropdown = NULL;
+static lv_obj_t *evil_twin_status_label = NULL;
+static lv_obj_t *evil_twin_close_btn = NULL;
+static int evil_twin_html_count = 0;
+static char evil_twin_html_files[20][64];  // Max 20 files, 64 chars each
+static volatile bool evil_twin_monitoring = false;
+static TaskHandle_t evil_twin_monitor_task_handle = NULL;
 
 // PSRAM buffers for observer (allocated once)
 static char *observer_rx_buffer = NULL;
@@ -213,6 +227,11 @@ static bool parse_sniffer_network_line(const char *line, observer_network_t *net
 static bool parse_sniffer_client_line(const char *line, char *mac_out, size_t mac_size);
 static void show_scan_deauth_popup(void);
 static void scan_deauth_popup_close_cb(lv_event_t *e);
+static void fetch_html_files_from_sd(void);
+static void show_evil_twin_popup(void);
+static void evil_twin_start_cb(lv_event_t *e);
+static void evil_twin_close_cb(lv_event_t *e);
+static void evil_twin_monitor_task(void *arg);
 
 //==================================================================================
 // INA226 Power Monitor Driver
@@ -347,9 +366,20 @@ static void battery_status_timer_cb(lv_timer_t *timer)
     // Read new values
     update_battery_status();
     
-    // Debug log
-    ESP_LOGI(TAG, "Battery: %.2fV, charging: %d, label: %p", 
-             current_battery_voltage, current_charging_status, (void*)battery_voltage_label);
+    // Memory stats
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t psram_min = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    size_t sram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t sram_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA);
+    size_t dma_min = heap_caps_get_minimum_free_size(MALLOC_CAP_DMA);
+    
+    // Debug log with battery and memory stats
+    ESP_LOGI(TAG, "Battery: %.2fV, charging: %d", current_battery_voltage, current_charging_status);
+    ESP_LOGI(TAG, "Memory - PSRAM: %u KB free (min: %u KB) | SRAM: %u KB free (min: %u KB) | DMA: %u KB free (min: %u KB)",
+             (unsigned)(psram_free / 1024), (unsigned)(psram_min / 1024),
+             (unsigned)(sram_free / 1024), (unsigned)(sram_min / 1024),
+             (unsigned)(dma_free / 1024), (unsigned)(dma_min / 1024));
     
     // Update UI labels
     if (battery_voltage_label) {
@@ -918,8 +948,13 @@ static void attack_tile_event_cb(lv_event_t *e)
         return;
     }
     
+    // Handle Evil Twin attack
+    if (strcmp(attack_name, "Evil Twin") == 0) {
+        show_evil_twin_popup();
+        return;
+    }
+    
     // TODO: Implement other attack types
-    // - Evil Twin  
     // - SAE Overflow
     // - Handshaker
     // - Sniffer
@@ -934,9 +969,10 @@ static void scan_deauth_popup_close_cb(lv_event_t *e)
     // Send stop command
     uart_send_command("stop");
     
-    // Delete popup
-    if (scan_deauth_popup_obj) {
-        lv_obj_del(scan_deauth_popup_obj);
+    // Delete overlay (popup is child, will be deleted too)
+    if (scan_deauth_overlay) {
+        lv_obj_del(scan_deauth_overlay);
+        scan_deauth_overlay = NULL;
         scan_deauth_popup_obj = NULL;
     }
 }
@@ -946,9 +982,19 @@ static void show_scan_deauth_popup(void)
 {
     if (scan_deauth_popup_obj != NULL) return;  // Already showing
     
-    // Create popup overlay
     lv_obj_t *scr = lv_scr_act();
-    scan_deauth_popup_obj = lv_obj_create(scr);
+    
+    // Create modal overlay (full screen, semi-transparent, blocks input behind)
+    scan_deauth_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(scan_deauth_overlay);
+    lv_obj_set_size(scan_deauth_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(scan_deauth_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(scan_deauth_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(scan_deauth_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(scan_deauth_overlay, LV_OBJ_FLAG_CLICKABLE);  // Capture clicks
+    
+    // Create popup as child of overlay
+    scan_deauth_popup_obj = lv_obj_create(scan_deauth_overlay);
     lv_obj_set_size(scan_deauth_popup_obj, 550, 450);
     lv_obj_center(scan_deauth_popup_obj);
     lv_obj_set_style_bg_color(scan_deauth_popup_obj, lv_color_hex(0x1A1A2A), 0);
@@ -1023,6 +1069,429 @@ static void show_scan_deauth_popup(void)
     lv_label_set_text(btn_label, "STOP ATTACK");
     lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_18, 0);
     lv_obj_center(btn_label);
+}
+
+// ======================= Evil Twin Attack Functions =======================
+
+// Fetch HTML files list from SD card via UART
+static void fetch_html_files_from_sd(void)
+{
+    evil_twin_html_count = 0;
+    memset(evil_twin_html_files, 0, sizeof(evil_twin_html_files));
+    
+    // Flush UART buffer
+    uart_flush(UART_NUM);
+    
+    // Send list_sd command
+    uart_send_command("list_sd");
+    
+    // Buffer for receiving data
+    static char rx_buffer[2048];
+    static char line_buffer[256];
+    int line_pos = 0;
+    bool header_found = false;
+    
+    TickType_t start_time = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(3000);  // 3 second timeout
+    
+    while ((xTaskGetTickCount() - start_time) < timeout_ticks && evil_twin_html_count < 20) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            
+            for (int i = 0; i < len; i++) {
+                char c = rx_buffer[i];
+                
+                if (c == '\n' || c == '\r') {
+                    if (line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
+                        
+                        // Check for header line
+                        if (strstr(line_buffer, "HTML files found") != NULL) {
+                            header_found = true;
+                        } else if (header_found && line_pos > 2) {
+                            // Parse line format: "1 PLAY.html"
+                            int file_num;
+                            char filename[64];
+                            if (sscanf(line_buffer, "%d %63s", &file_num, filename) == 2) {
+                                snprintf(evil_twin_html_files[evil_twin_html_count], 
+                                         sizeof(evil_twin_html_files[0]), "%s", filename);
+                                ESP_LOGI(TAG, "Found HTML file %d: %s", file_num, filename);
+                                evil_twin_html_count++;
+                            }
+                        }
+                        
+                        line_pos = 0;
+                    }
+                } else if (line_pos < (int)sizeof(line_buffer) - 1) {
+                    line_buffer[line_pos++] = c;
+                }
+            }
+        }
+    }
+    
+    ESP_LOGI(TAG, "Fetched %d HTML files from SD card", evil_twin_html_count);
+}
+
+// Close Evil Twin popup
+static void evil_twin_close_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Evil Twin popup closed");
+    
+    // Stop monitoring
+    evil_twin_monitoring = false;
+    
+    // Send stop command
+    uart_send_command("stop");
+    
+    // Delete overlay (popup is child, will be deleted too)
+    if (evil_twin_overlay) {
+        lv_obj_del(evil_twin_overlay);
+        evil_twin_overlay = NULL;
+        evil_twin_popup_obj = NULL;
+        evil_twin_network_dropdown = NULL;
+        evil_twin_html_dropdown = NULL;
+        evil_twin_status_label = NULL;
+        evil_twin_close_btn = NULL;
+    }
+}
+
+// Evil Twin monitor task - watches UART for password capture
+static void evil_twin_monitor_task(void *arg)
+{
+    (void)arg;
+    
+    static char rx_buffer[1024];
+    static char line_buffer[512];
+    int line_pos = 0;
+    
+    ESP_LOGI(TAG, "Evil Twin monitor task started");
+    
+    while (evil_twin_monitoring) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(200));
+        
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            
+            for (int i = 0; i < len; i++) {
+                char c = rx_buffer[i];
+                
+                if (c == '\n' || c == '\r') {
+                    if (line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
+                        ESP_LOGI(TAG, "Evil Twin UART: %s", line_buffer);
+                        
+                        // Look for password capture pattern:
+                        // "Wi-Fi connected to SSID=XXX with password=YYY Password verified!"
+                        char *ssid_start = strstr(line_buffer, "SSID=");
+                        char *pwd_start = strstr(line_buffer, "password=");
+                        char *verified = strstr(line_buffer, "Password verified");
+                        
+                        if (ssid_start && pwd_start && verified) {
+                            // Extract SSID
+                            char captured_ssid[64] = {0};
+                            ssid_start += 5;  // Skip "SSID="
+                            char *ssid_end = strstr(ssid_start, " with");
+                            if (ssid_end) {
+                                int ssid_len = ssid_end - ssid_start;
+                                if (ssid_len > 63) ssid_len = 63;
+                                strncpy(captured_ssid, ssid_start, ssid_len);
+                            }
+                            
+                            // Extract password
+                            char captured_pwd[128] = {0};
+                            pwd_start += 9;  // Skip "password="
+                            char *pwd_end = strstr(pwd_start, " Password");
+                            if (pwd_end) {
+                                int pwd_len = pwd_end - pwd_start;
+                                if (pwd_len > 127) pwd_len = 127;
+                                strncpy(captured_pwd, pwd_start, pwd_len);
+                            }
+                            
+                            ESP_LOGI(TAG, "PASSWORD CAPTURED! SSID: %s, Password: %s", captured_ssid, captured_pwd);
+                            
+                            // Update UI on main thread
+                            if (evil_twin_status_label) {
+                                char result_text[512];
+                                snprintf(result_text, sizeof(result_text),
+                                    "PASSWORD CAPTURED!\n\n"
+                                    "SSID: %s\n"
+                                    "Password: %s",
+                                    captured_ssid, captured_pwd);
+                                lv_label_set_text(evil_twin_status_label, result_text);
+                                lv_obj_set_style_text_color(evil_twin_status_label, COLOR_MATERIAL_GREEN, 0);
+                            }
+                            
+                            // Show close button
+                            if (evil_twin_close_btn) {
+                                lv_obj_clear_flag(evil_twin_close_btn, LV_OBJ_FLAG_HIDDEN);
+                            }
+                            
+                            // Stop monitoring
+                            evil_twin_monitoring = false;
+                            break;
+                        }
+                        
+                        line_pos = 0;
+                    }
+                } else if (line_pos < (int)sizeof(line_buffer) - 1) {
+                    line_buffer[line_pos++] = c;
+                }
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    
+    ESP_LOGI(TAG, "Evil Twin monitor task ended");
+    evil_twin_monitor_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+// Evil Twin start button callback
+static void evil_twin_start_cb(lv_event_t *e)
+{
+    (void)e;
+    
+    if (!evil_twin_network_dropdown || !evil_twin_html_dropdown) return;
+    
+    // Get selected network index from dropdown
+    int selected_dropdown_idx = lv_dropdown_get_selected(evil_twin_network_dropdown);
+    
+    // Get selected HTML file index from dropdown
+    int selected_html_idx = lv_dropdown_get_selected(evil_twin_html_dropdown);
+    
+    if (selected_dropdown_idx < 0 || selected_dropdown_idx >= selected_network_count) {
+        ESP_LOGW(TAG, "Invalid network selection");
+        return;
+    }
+    
+    if (selected_html_idx < 0 || selected_html_idx >= evil_twin_html_count) {
+        ESP_LOGW(TAG, "Invalid HTML file selection");
+        return;
+    }
+    
+    // Get the actual network index for evil twin (0-based in our array)
+    int evil_twin_net_idx = selected_network_indices[selected_dropdown_idx];
+    int evil_twin_1based = networks[evil_twin_net_idx].index;  // 1-based for UART
+    
+    // Build select_networks command: evil twin first, then others (no duplicates)
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "select_networks %d", evil_twin_1based);
+    
+    for (int i = 0; i < selected_network_count; i++) {
+        int idx = selected_network_indices[i];
+        int net_1based = networks[idx].index;
+        if (net_1based != evil_twin_1based) {  // Skip duplicate
+            char num[8];
+            snprintf(num, sizeof(num), " %d", net_1based);
+            strncat(cmd, num, sizeof(cmd) - strlen(cmd) - 1);
+        }
+    }
+    
+    ESP_LOGI(TAG, "Evil Twin: sending %s", cmd);
+    uart_send_command(cmd);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Send select_html command (1-based index)
+    char html_cmd[32];
+    snprintf(html_cmd, sizeof(html_cmd), "select_html %d", selected_html_idx + 1);
+    ESP_LOGI(TAG, "Evil Twin: sending %s", html_cmd);
+    uart_send_command(html_cmd);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Send start_evil_twin
+    ESP_LOGI(TAG, "Evil Twin: sending start_evil_twin");
+    uart_send_command("start_evil_twin");
+    
+    // Build status text
+    wifi_network_t *et_net = &networks[evil_twin_net_idx];
+    const char *et_ssid = strlen(et_net->ssid) > 0 ? et_net->ssid : "(Hidden)";
+    const char *html_file = evil_twin_html_files[selected_html_idx];
+    
+    char status_text[512];
+    int pos = snprintf(status_text, sizeof(status_text),
+        "Attacking networks:\n");
+    
+    for (int i = 0; i < selected_network_count; i++) {
+        int idx = selected_network_indices[i];
+        wifi_network_t *net = &networks[idx];
+        const char *ssid = strlen(net->ssid) > 0 ? net->ssid : "(Hidden)";
+        pos += snprintf(status_text + pos, sizeof(status_text) - pos,
+            "  - %s (%s)\n", ssid, net->bssid);
+    }
+    
+    pos += snprintf(status_text + pos, sizeof(status_text) - pos,
+        "\nEvil Twin network: %s\n"
+        "Portal: %s\n\n"
+        "Waiting for victim to connect...",
+        et_ssid, html_file);
+    
+    if (evil_twin_status_label) {
+        lv_label_set_text(evil_twin_status_label, status_text);
+    }
+    
+    // Start monitoring task
+    evil_twin_monitoring = true;
+    xTaskCreate(evil_twin_monitor_task, "et_monitor", 4096, NULL, 5, &evil_twin_monitor_task_handle);
+}
+
+// Show Evil Twin popup with dropdowns
+static void show_evil_twin_popup(void)
+{
+    if (evil_twin_popup_obj != NULL) return;  // Already showing
+    
+    // First fetch HTML files from SD
+    fetch_html_files_from_sd();
+    
+    if (evil_twin_html_count == 0) {
+        ESP_LOGW(TAG, "No HTML files found on SD card");
+        // Could show an error message here
+        return;
+    }
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Create modal overlay (full screen, semi-transparent, blocks input behind)
+    evil_twin_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(evil_twin_overlay);
+    lv_obj_set_size(evil_twin_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(evil_twin_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(evil_twin_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(evil_twin_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(evil_twin_overlay, LV_OBJ_FLAG_CLICKABLE);  // Capture clicks
+    
+    // Create popup as child of overlay
+    evil_twin_popup_obj = lv_obj_create(evil_twin_overlay);
+    lv_obj_set_size(evil_twin_popup_obj, 600, 550);
+    lv_obj_center(evil_twin_popup_obj);
+    lv_obj_set_style_bg_color(evil_twin_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(evil_twin_popup_obj, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_border_width(evil_twin_popup_obj, 2, 0);
+    lv_obj_set_style_radius(evil_twin_popup_obj, 16, 0);
+    lv_obj_set_style_shadow_width(evil_twin_popup_obj, 30, 0);
+    lv_obj_set_style_shadow_color(evil_twin_popup_obj, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(evil_twin_popup_obj, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(evil_twin_popup_obj, 16, 0);
+    lv_obj_set_flex_flow(evil_twin_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(evil_twin_popup_obj, 12, 0);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(evil_twin_popup_obj);
+    lv_label_set_text(title, "Evil Twin Attack");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_ORANGE, 0);
+    
+    // Network dropdown container
+    lv_obj_t *net_cont = lv_obj_create(evil_twin_popup_obj);
+    lv_obj_set_size(net_cont, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(net_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(net_cont, 0, 0);
+    lv_obj_set_style_pad_all(net_cont, 0, 0);
+    lv_obj_set_flex_flow(net_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(net_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(net_cont, 10, 0);
+    lv_obj_clear_flag(net_cont, LV_OBJ_FLAG_SCROLLABLE);
+    
+    lv_obj_t *net_label = lv_label_create(net_cont);
+    lv_label_set_text(net_label, "Evil Twin Network:");
+    lv_obj_set_style_text_font(net_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(net_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_width(net_label, 180);
+    
+    evil_twin_network_dropdown = lv_dropdown_create(net_cont);
+    lv_obj_set_width(evil_twin_network_dropdown, 350);
+    lv_obj_set_style_bg_color(evil_twin_network_dropdown, lv_color_hex(0x2D2D2D), 0);
+    lv_obj_set_style_text_color(evil_twin_network_dropdown, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_color(evil_twin_network_dropdown, lv_color_hex(0x555555), 0);
+    
+    // Build network dropdown options from selected networks
+    char network_options[1024] = "";
+    for (int i = 0; i < selected_network_count; i++) {
+        int idx = selected_network_indices[i];
+        if (idx >= 0 && idx < network_count) {
+            const char *ssid = strlen(networks[idx].ssid) > 0 ? networks[idx].ssid : "(Hidden)";
+            if (i > 0) strncat(network_options, "\n", sizeof(network_options) - strlen(network_options) - 1);
+            strncat(network_options, ssid, sizeof(network_options) - strlen(network_options) - 1);
+        }
+    }
+    lv_dropdown_set_options(evil_twin_network_dropdown, network_options);
+    
+    // HTML dropdown container
+    lv_obj_t *html_cont = lv_obj_create(evil_twin_popup_obj);
+    lv_obj_set_size(html_cont, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(html_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(html_cont, 0, 0);
+    lv_obj_set_style_pad_all(html_cont, 0, 0);
+    lv_obj_set_flex_flow(html_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(html_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(html_cont, 10, 0);
+    lv_obj_clear_flag(html_cont, LV_OBJ_FLAG_SCROLLABLE);
+    
+    lv_obj_t *html_label = lv_label_create(html_cont);
+    lv_label_set_text(html_label, "Portal HTML:");
+    lv_obj_set_style_text_font(html_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(html_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_width(html_label, 180);
+    
+    evil_twin_html_dropdown = lv_dropdown_create(html_cont);
+    lv_obj_set_width(evil_twin_html_dropdown, 350);
+    lv_obj_set_style_bg_color(evil_twin_html_dropdown, lv_color_hex(0x2D2D2D), 0);
+    lv_obj_set_style_text_color(evil_twin_html_dropdown, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_color(evil_twin_html_dropdown, lv_color_hex(0x555555), 0);
+    
+    // Build HTML dropdown options
+    char html_options[2048] = "";
+    for (int i = 0; i < evil_twin_html_count; i++) {
+        if (i > 0) strncat(html_options, "\n", sizeof(html_options) - strlen(html_options) - 1);
+        strncat(html_options, evil_twin_html_files[i], sizeof(html_options) - strlen(html_options) - 1);
+    }
+    lv_dropdown_set_options(evil_twin_html_dropdown, html_options);
+    
+    // START ATTACK button
+    lv_obj_t *start_btn = lv_btn_create(evil_twin_popup_obj);
+    lv_obj_set_size(start_btn, lv_pct(100), 50);
+    lv_obj_set_style_bg_color(start_btn, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_bg_color(start_btn, lv_color_hex(0xCC7000), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(start_btn, 8, 0);
+    lv_obj_add_event_cb(start_btn, evil_twin_start_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *start_label = lv_label_create(start_btn);
+    lv_label_set_text(start_label, "START ATTACK");
+    lv_obj_set_style_text_font(start_label, &lv_font_montserrat_18, 0);
+    lv_obj_center(start_label);
+    
+    // Status label (scrollable area)
+    lv_obj_t *status_cont = lv_obj_create(evil_twin_popup_obj);
+    lv_obj_set_size(status_cont, lv_pct(100), 200);
+    lv_obj_set_style_bg_color(status_cont, lv_color_hex(0x0A0A1A), 0);
+    lv_obj_set_style_border_width(status_cont, 0, 0);
+    lv_obj_set_style_radius(status_cont, 8, 0);
+    lv_obj_set_style_pad_all(status_cont, 12, 0);
+    lv_obj_add_flag(status_cont, LV_OBJ_FLAG_SCROLLABLE);
+    
+    evil_twin_status_label = lv_label_create(status_cont);
+    lv_label_set_text(evil_twin_status_label, "Select network and portal, then click START ATTACK");
+    lv_obj_set_style_text_font(evil_twin_status_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(evil_twin_status_label, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_set_width(evil_twin_status_label, lv_pct(100));
+    lv_label_set_long_mode(evil_twin_status_label, LV_LABEL_LONG_WRAP);
+    
+    // CLOSE button (hidden initially, shown when password captured)
+    evil_twin_close_btn = lv_btn_create(evil_twin_popup_obj);
+    lv_obj_set_size(evil_twin_close_btn, lv_pct(100), 50);
+    lv_obj_set_style_bg_color(evil_twin_close_btn, COLOR_MATERIAL_GREEN, 0);
+    lv_obj_set_style_bg_color(evil_twin_close_btn, lv_color_hex(0x2E7D32), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(evil_twin_close_btn, 8, 0);
+    lv_obj_add_event_cb(evil_twin_close_btn, evil_twin_close_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(evil_twin_close_btn, LV_OBJ_FLAG_HIDDEN);  // Hidden initially
+    
+    lv_obj_t *close_label = lv_label_create(evil_twin_close_btn);
+    lv_label_set_text(close_label, "CLOSE");
+    lv_obj_set_style_text_font(close_label, &lv_font_montserrat_18, 0);
+    lv_obj_center(close_label);
 }
 
 // Back button click handler
@@ -3172,6 +3641,9 @@ void app_main(void)
     
     // Initialize UART for ESP32C5 communication
     uart_init();
+    
+    // Initialize LVGL custom PSRAM allocator
+    lvgl_memory_init();
     
     // Initialize display
     lv_display_t *disp = bsp_display_start();
