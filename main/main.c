@@ -596,14 +596,15 @@ static void wifi_scan_task(void *arg)
             lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(item, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_set_style_pad_column(item, 12, 0);
+            lv_obj_clear_flag(item, LV_OBJ_FLAG_CLICKABLE);  // Don't steal clicks from checkbox
             
-            // Checkbox (on the left) - made bigger for better touch accuracy
+            // Checkbox (on the left) - explicit size for better touch accuracy
             lv_obj_t *cb = lv_checkbox_create(item);
             lv_checkbox_set_text(cb, "");  // Empty text - we use separate labels
+            lv_obj_set_size(cb, 50, 50);  // Explicit size for touch target
+            lv_obj_set_ext_click_area(cb, 15);  // Extend touch area by 15px
             lv_obj_set_style_pad_all(cb, 4, 0);
-            // Scale up the indicator moderately
-            lv_obj_set_style_transform_width(cb, 10, LV_PART_INDICATOR);
-            lv_obj_set_style_transform_height(cb, 10, LV_PART_INDICATOR);
+            lv_obj_set_style_align(cb, LV_ALIGN_LEFT_MID, 0);  // Center vertically in row
             // Style the indicator - dark when unchecked, green when checked
             lv_obj_set_style_bg_color(cb, lv_color_hex(0x3D3D3D), LV_PART_INDICATOR);
             lv_obj_set_style_bg_color(cb, lv_color_hex(0x4CAF50), LV_PART_INDICATOR | LV_STATE_CHECKED);
@@ -621,6 +622,7 @@ static void wifi_scan_task(void *arg)
             lv_obj_set_style_pad_all(text_cont, 0, 0);
             lv_obj_set_flex_flow(text_cont, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_style_pad_row(text_cont, 4, 0);
+            lv_obj_clear_flag(text_cont, LV_OBJ_FLAG_CLICKABLE);  // Don't steal clicks
             
             // SSID (or "Hidden" if empty)
             lv_obj_t *ssid_label = lv_label_create(text_cont);
@@ -1182,32 +1184,58 @@ static void evil_twin_monitor_task(void *arg)
                         line_buffer[line_pos] = '\0';
                         ESP_LOGI(TAG, "Evil Twin UART: %s", line_buffer);
                         
-                        // Look for password capture pattern:
-                        // "Wi-Fi connected to SSID=XXX with password=YYY Password verified!"
-                        char *ssid_start = strstr(line_buffer, "SSID=");
-                        char *pwd_start = strstr(line_buffer, "password=");
-                        char *verified = strstr(line_buffer, "Password verified");
+                        // Look for client connection: "Client connected - MAC: XX:XX:XX:XX:XX:XX"
+                        char *client_connected = strstr(line_buffer, "Client connected - MAC:");
+                        if (client_connected && evil_twin_status_label) {
+                            // Extract MAC address
+                            char mac[20] = {0};
+                            char *mac_start = client_connected + 24;  // Skip "Client connected - MAC: "
+                            int mac_len = 0;
+                            while (mac_start[mac_len] && mac_start[mac_len] != '\n' && mac_start[mac_len] != '\r' && mac_len < 17) {
+                                mac[mac_len] = mac_start[mac_len];
+                                mac_len++;
+                            }
+                            
+                            // Update status with client connected message
+                            char status_text[256];
+                            snprintf(status_text, sizeof(status_text),
+                                "Client connected!\n\n"
+                                "MAC: %s\n\n"
+                                "Waiting for password...", mac);
+                            lv_label_set_text(evil_twin_status_label, status_text);
+                            lv_obj_set_style_text_color(evil_twin_status_label, COLOR_MATERIAL_AMBER, 0);
+                        }
                         
-                        if (ssid_start && pwd_start && verified) {
-                            // Extract SSID
+                        // Look for password capture pattern:
+                        // "Wi-Fi: connected to SSID='XXX' with password='YYY'"
+                        // Note: SSID and password may be quoted with single quotes
+                        char *connected = strstr(line_buffer, "connected to SSID=");
+                        char *pwd_start = strstr(line_buffer, "password=");
+                        
+                        if (connected && pwd_start) {
+                            // Extract SSID (skip "connected to SSID=" and possible quote)
                             char captured_ssid[64] = {0};
-                            ssid_start += 5;  // Skip "SSID="
-                            char *ssid_end = strstr(ssid_start, " with");
+                            char *ssid_start = connected + 18;  // Skip "connected to SSID="
+                            if (*ssid_start == '\'') ssid_start++;  // Skip opening quote
+                            char *ssid_end = strstr(ssid_start, "' with");
+                            if (!ssid_end) ssid_end = strstr(ssid_start, " with");
                             if (ssid_end) {
                                 int ssid_len = ssid_end - ssid_start;
                                 if (ssid_len > 63) ssid_len = 63;
                                 strncpy(captured_ssid, ssid_start, ssid_len);
                             }
                             
-                            // Extract password
+                            // Extract password (skip "password=" and possible quote)
                             char captured_pwd[128] = {0};
                             pwd_start += 9;  // Skip "password="
-                            char *pwd_end = strstr(pwd_start, " Password");
-                            if (pwd_end) {
-                                int pwd_len = pwd_end - pwd_start;
-                                if (pwd_len > 127) pwd_len = 127;
-                                strncpy(captured_pwd, pwd_start, pwd_len);
+                            if (*pwd_start == '\'') pwd_start++;  // Skip opening quote
+                            // Find end - either closing quote or end of line
+                            int pwd_len = 0;
+                            while (pwd_start[pwd_len] && pwd_start[pwd_len] != '\'' && pwd_start[pwd_len] != '\n' && pwd_start[pwd_len] != '\r') {
+                                pwd_len++;
                             }
+                            if (pwd_len > 127) pwd_len = 127;
+                            strncpy(captured_pwd, pwd_start, pwd_len);
                             
                             ESP_LOGI(TAG, "PASSWORD CAPTURED! SSID: %s, Password: %s", captured_ssid, captured_pwd);
                             
