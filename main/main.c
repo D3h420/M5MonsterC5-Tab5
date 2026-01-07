@@ -42,7 +42,7 @@ static const char *TAG = "wifi_scanner";
 #define ESP_MODEM_MAX_NETWORKS  50
 
 // INA226 Power Monitor Configuration (for battery voltage)
-#define INA226_I2C_ADDR         0x40    // Default I2C address for INA226
+#define INA226_I2C_ADDR         0x41    // M5Tab5 uses address 0x41 (not default 0x40!)
 #define INA226_REG_CONFIG       0x00    // Configuration register
 #define INA226_REG_SHUNT_VOLT   0x01    // Shunt voltage register
 #define INA226_REG_BUS_VOLT     0x02    // Bus voltage register
@@ -55,6 +55,13 @@ static const char *TAG = "wifi_scanner";
 #define INA226_REG_DIE_ID       0xFF    // Die ID (0x2260)
 #define INA226_BUS_VOLT_LSB     1.25f   // 1.25mV per LSB for bus voltage
 #define BATTERY_UPDATE_MS       2000    // Update battery status every 2 seconds
+
+// INA226 Calibration (from M5Tab5 official demo)
+#define INA226_SHUNT_RESISTANCE 0.005f  // 5 mOhm shunt resistor
+#define INA226_MAX_CURRENT      8.192f  // Max expected current in Amps
+// Config register value: AVG=16 (010), VBUSCT=1100us (100), VSHCT=1100us (100), MODE=continuous (111)
+// Bits: [15:12]=0, [11:9]=010 (AVG=16), [8:6]=100 (VBUS=1100us), [5:3]=100 (VSH=1100us), [2:0]=111 (continuous)
+#define INA226_CONFIG_VALUE     0x4527  // AVG=16, 1100us conv times, continuous mode
 
 // Maximum networks to display
 #define MAX_NETWORKS      50
@@ -71,6 +78,8 @@ static const char *TAG = "wifi_scanner";
 #define COLOR_MATERIAL_AMBER    lv_color_make(255, 193, 7)     // #FFC107
 #define COLOR_MATERIAL_CYAN     lv_color_make(0, 188, 212)     // #00BCD4
 #define COLOR_MATERIAL_TEAL     lv_color_make(0, 150, 136)     // #009688 - Kismet-style teal
+#define COLOR_MATERIAL_ORANGE   lv_color_make(255, 152, 0)     // #FF9800
+#define COLOR_MATERIAL_PINK     lv_color_make(233, 30, 99)     // #E91E63
 
 // WiFi network info structure
 typedef struct {
@@ -98,6 +107,10 @@ typedef struct {
 static wifi_network_t networks[MAX_NETWORKS];
 static int network_count = 0;
 static bool scan_in_progress = false;
+
+// Selected network indices (0-based)
+static int selected_network_indices[MAX_NETWORKS];
+static int selected_network_count = 0;
 
 // Observer global variables (large arrays in PSRAM)
 static observer_network_t *observer_networks = NULL;  // Allocated in PSRAM
@@ -131,6 +144,7 @@ static lv_obj_t *tiles_container = NULL;
 static lv_obj_t *scan_page = NULL;
 static lv_obj_t *observer_page = NULL;
 static lv_obj_t *esp_modem_page = NULL;
+static lv_obj_t *global_attacks_page = NULL;
 
 // ESP Modem global variables
 static wifi_ap_record_t *esp_modem_networks = NULL;  // Allocated in PSRAM
@@ -175,6 +189,11 @@ static void show_observer_page(void);
 static void show_esp_modem_page(void);
 static void main_tile_event_cb(lv_event_t *e);
 static void back_btn_event_cb(lv_event_t *e);
+static void network_checkbox_event_cb(lv_event_t *e);
+static void attack_tile_event_cb(lv_event_t *e);
+static void create_status_bar(void);
+static void show_global_attacks_page(void);
+static void global_attack_tile_event_cb(lv_event_t *e);
 static void observer_back_btn_event_cb(lv_event_t *e);
 static void esp_modem_back_btn_event_cb(lv_event_t *e);
 static void esp_modem_scan_btn_click_cb(lv_event_t *e);
@@ -230,21 +249,47 @@ static esp_err_t ina226_init(void)
     uint8_t reg = INA226_REG_MFG_ID;
     uint8_t data[2];
     ret = i2c_master_transmit_receive(ina226_dev_handle, &reg, 1, data, 2, 100);
-    if (ret == ESP_OK) {
-        uint16_t mfg_id = (data[0] << 8) | data[1];
-        ESP_LOGI(TAG, "INA226 Manufacturer ID: 0x%04X (expected 0x5449)", mfg_id);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read INA226 manufacturer ID: %s", esp_err_to_name(ret));
+        i2c_master_bus_rm_device(ina226_dev_handle);
+        ina226_dev_handle = NULL;
+        return ret;
     }
     
-    // Configure INA226: default config, averaging, conversion times
-    // Default config: 0x4127 (continuous shunt and bus, 1.1ms conversion, 1 average)
-    uint8_t config_cmd[3] = {INA226_REG_CONFIG, 0x41, 0x27};
+    uint16_t mfg_id = (data[0] << 8) | data[1];
+    ESP_LOGI(TAG, "INA226 Manufacturer ID: 0x%04X (expected 0x5449)", mfg_id);
+    
+    if (mfg_id != 0x5449) {
+        ESP_LOGE(TAG, "INA226 manufacturer ID mismatch - device not responding correctly");
+        i2c_master_bus_rm_device(ina226_dev_handle);
+        ina226_dev_handle = NULL;
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    
+    // Configure INA226: AVG=16, 1100us conversion times, continuous mode
+    // Using INA226_CONFIG_VALUE (0x4527) from M5Tab5 official demo
+    uint8_t config_cmd[3] = {INA226_REG_CONFIG, (INA226_CONFIG_VALUE >> 8) & 0xFF, INA226_CONFIG_VALUE & 0xFF};
     ret = i2c_master_transmit(ina226_dev_handle, config_cmd, 3, 100);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to configure INA226: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to configure INA226: %s", esp_err_to_name(ret));
+        i2c_master_bus_rm_device(ina226_dev_handle);
+        ina226_dev_handle = NULL;
+        return ret;
+    }
+    
+    // Calibrate for current/power measurements
+    // Cal = 0.00512 / (currentLSB * Rshunt)
+    // With Rshunt=0.005 and maxI=8.192A: currentLSB = 8.192/32767 ≈ 0.00025
+    // Cal = 0.00512 / (0.00025 * 0.005) = 4096 = 0x1000
+    uint8_t calib_cmd[3] = {INA226_REG_CALIB, 0x10, 0x00};
+    ret = i2c_master_transmit(ina226_dev_handle, calib_cmd, 3, 100);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to calibrate INA226: %s (voltage readings will still work)", esp_err_to_name(ret));
+        // Don't fail - voltage readings will still work
     }
     
     ina226_initialized = true;
-    ESP_LOGI(TAG, "INA226 Power Monitor initialized successfully");
+    ESP_LOGI(TAG, "INA226 Power Monitor initialized successfully at address 0x%02X", INA226_I2C_ADDR);
     return ESP_OK;
 }
 
@@ -265,8 +310,10 @@ static float ina226_read_bus_voltage(void)
     
     // Bus voltage register is 16-bit, 1.25mV per LSB
     uint16_t raw_voltage = (data[0] << 8) | data[1];
-    float voltage_mv = raw_voltage * INA226_BUS_VOLT_LSB;
-    float voltage_v = voltage_mv / 1000.0f;
+    // Use same formula as official M5Tab5 demo: voltage * 0.00125 (V)
+    float voltage_v = raw_voltage * 0.00125f;
+    
+    ESP_LOGD(TAG, "INA226 raw: 0x%04X (%u), voltage: %.3fV", raw_voltage, raw_voltage, voltage_v);
     
     return voltage_v;
 }
@@ -295,10 +342,17 @@ static void battery_status_timer_cb(lv_timer_t *timer)
     // Read new values
     update_battery_status();
     
+    // Debug log
+    ESP_LOGI(TAG, "Battery: %.2fV, charging: %d, label: %p", 
+             current_battery_voltage, current_charging_status, (void*)battery_voltage_label);
+    
     // Update UI labels
     if (battery_voltage_label) {
         if (current_battery_voltage > 0.1f) {
-            lv_label_set_text_fmt(battery_voltage_label, "%.2fV", current_battery_voltage);
+            // Use snprintf instead of lv_label_set_text_fmt for float support
+            char voltage_str[16];
+            snprintf(voltage_str, sizeof(voltage_str), "%.2fV", current_battery_voltage);
+            lv_label_set_text(battery_voltage_label, voltage_str);
         } else {
             lv_label_set_text(battery_voltage_label, "-- V");
         }
@@ -306,7 +360,8 @@ static void battery_status_timer_cb(lv_timer_t *timer)
     
     if (charging_status_label) {
         if (current_charging_status) {
-            lv_label_set_text(charging_status_label, LV_SYMBOL_CHARGE " Charging");
+            // Just icon, no text - saves space
+            lv_label_set_text(charging_status_label, LV_SYMBOL_CHARGE);
             lv_obj_set_style_text_color(charging_status_label, lv_color_make(76, 175, 80), 0);  // Green
         } else {
             lv_label_set_text(charging_status_label, LV_SYMBOL_BATTERY_FULL);
@@ -497,18 +552,38 @@ static void wifi_scan_task(void *arg)
         for (int i = 0; i < network_count; i++) {
             wifi_network_t *net = &networks[i];
             
-            // Create list item
+            // Create list item with horizontal layout (checkbox + text container)
             lv_obj_t *item = lv_obj_create(network_list);
             lv_obj_set_size(item, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_pad_all(item, 8, 0);
             lv_obj_set_style_bg_color(item, lv_color_hex(0x2D2D2D), 0);
             lv_obj_set_style_border_width(item, 0, 0);
             lv_obj_set_style_radius(item, 8, 0);
-            lv_obj_set_flex_flow(item, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_style_pad_row(item, 4, 0);
+            lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(item, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(item, 12, 0);
+            
+            // Checkbox (on the left) - made bigger for better touch accuracy
+            lv_obj_t *cb = lv_checkbox_create(item);
+            lv_checkbox_set_text(cb, "");  // Empty text - we use separate labels
+            lv_obj_set_style_pad_all(cb, 8, 0);
+            // Make checkbox indicator bigger
+            lv_obj_set_style_width(cb, 40, LV_PART_INDICATOR);
+            lv_obj_set_style_height(cb, 40, LV_PART_INDICATOR);
+            // Pass 0-based index as user data
+            lv_obj_add_event_cb(cb, network_checkbox_event_cb, LV_EVENT_VALUE_CHANGED, (void*)(intptr_t)i);
+            
+            // Text container (vertical layout for SSID and info)
+            lv_obj_t *text_cont = lv_obj_create(item);
+            lv_obj_set_size(text_cont, lv_pct(85), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(text_cont, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(text_cont, 0, 0);
+            lv_obj_set_style_pad_all(text_cont, 0, 0);
+            lv_obj_set_flex_flow(text_cont, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_style_pad_row(text_cont, 4, 0);
             
             // SSID (or "Hidden" if empty)
-            lv_obj_t *ssid_label = lv_label_create(item);
+            lv_obj_t *ssid_label = lv_label_create(text_cont);
             if (strlen(net->ssid) > 0) {
                 lv_label_set_text(ssid_label, net->ssid);
             } else {
@@ -518,7 +593,7 @@ static void wifi_scan_task(void *arg)
             lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xFFFFFF), 0);
             
             // BSSID and Band
-            lv_obj_t *info_label = lv_label_create(item);
+            lv_obj_t *info_label = lv_label_create(text_cont);
             lv_label_set_text_fmt(info_label, "%s  |  %s  |  %d dBm", 
                                   net->bssid, net->band, net->rssi);
             lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
@@ -548,6 +623,10 @@ static void scan_btn_click_cb(lv_event_t *e)
     }
     
     scan_in_progress = true;
+    
+    // Clear previous selections
+    selected_network_count = 0;
+    memset(selected_network_indices, 0, sizeof(selected_network_indices));
     
     // Disable button during scan
     lv_obj_add_state(scan_btn, LV_STATE_DISABLED);
@@ -612,6 +691,120 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
     return tile;
 }
 
+// Create a smaller tile button for compact layouts (e.g., attack selection row)
+static lv_obj_t *create_small_tile(lv_obj_t *parent, const char *icon, const char *text, lv_color_t bg_color, lv_event_cb_t callback, const char *user_data)
+{
+    lv_obj_t *tile = lv_btn_create(parent);
+    lv_obj_set_size(tile, 85, 55);  // Smaller tile size for single row
+    lv_obj_set_style_bg_color(tile, bg_color, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(tile, lv_color_lighten(bg_color, 50), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_obj_set_style_radius(tile, 8, 0);  // Smaller radius
+    lv_obj_set_style_shadow_width(tile, 4, 0);  // Smaller shadow
+    lv_obj_set_style_shadow_color(tile, lv_color_make(0, 0, 0), 0);
+    lv_obj_set_style_shadow_opa(tile, LV_OPA_30, 0);
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(tile, 4, 0);
+    
+    if (icon) {
+        lv_obj_t *icon_label = lv_label_create(tile);
+        lv_label_set_text(icon_label, icon);
+        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_14, 0);  // Smaller icon
+        lv_obj_set_style_text_color(icon_label, lv_color_make(255, 255, 255), 0);
+    }
+    
+    if (text) {
+        lv_obj_t *text_label = lv_label_create(tile);
+        lv_label_set_text(text_label, text);
+        lv_obj_set_style_text_font(text_label, &lv_font_montserrat_12, 0);  // Smaller text
+        lv_obj_set_style_text_color(text_label, lv_color_make(255, 255, 255), 0);
+        lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(text_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(text_label, 75);
+    }
+    
+    if (callback && user_data) {
+        lv_obj_add_event_cb(tile, callback, LV_EVENT_CLICKED, (void*)user_data);
+    }
+    
+    return tile;
+}
+
+// Create status bar at top of screen (reusable helper)
+static void create_status_bar(void)
+{
+    ESP_LOGI(TAG, "Creating status bar...");
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Delete existing status bar if present
+    if (status_bar) {
+        lv_obj_del(status_bar);
+        status_bar = NULL;
+        battery_voltage_label = NULL;
+        charging_status_label = NULL;
+    }
+    
+    // Create status bar at top of screen
+    status_bar = lv_obj_create(scr);
+    lv_obj_set_size(status_bar, lv_pct(100), 40);
+    lv_obj_align(status_bar, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(status_bar, lv_color_make(30, 30, 30), 0);  // Slightly lighter than background
+    lv_obj_set_style_border_width(status_bar, 0, 0);
+    lv_obj_set_style_radius(status_bar, 0, 0);
+    lv_obj_set_style_pad_hor(status_bar, 16, 0);
+    lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // App title centered
+    lv_obj_t *app_title = lv_label_create(status_bar);
+    lv_label_set_text(app_title, "LABORATORIUM");
+    lv_obj_set_style_text_font(app_title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(app_title, lv_color_make(255, 255, 255), 0);
+    lv_obj_align(app_title, LV_ALIGN_CENTER, 0, 0);
+    
+    // Battery status container on the right - use fixed width to ensure visibility
+    lv_obj_t *battery_cont = lv_obj_create(status_bar);
+    lv_obj_set_size(battery_cont, 140, 36);  // Fixed width for voltage + icon
+    lv_obj_set_style_bg_opa(battery_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(battery_cont, 0, 0);
+    lv_obj_set_style_pad_all(battery_cont, 0, 0);
+    lv_obj_align(battery_cont, LV_ALIGN_RIGHT_MID, -8, 0);  // Small margin from edge
+    lv_obj_set_flex_flow(battery_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(battery_cont, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(battery_cont, 8, 0);
+    lv_obj_clear_flag(battery_cont, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Battery voltage label (e.g., "8.13V")
+    battery_voltage_label = lv_label_create(battery_cont);
+    lv_label_set_text(battery_voltage_label, "-.--V");
+    lv_obj_set_style_text_font(battery_voltage_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(battery_voltage_label, lv_color_make(255, 255, 255), 0);
+    
+    // Charging status label (just icon, no text to save space)
+    charging_status_label = lv_label_create(battery_cont);
+    lv_label_set_text(charging_status_label, LV_SYMBOL_BATTERY_FULL);
+    lv_obj_set_style_text_font(charging_status_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(charging_status_label, lv_color_make(255, 255, 255), 0);
+    
+    // Initialize INA226 if not already done
+    if (!ina226_initialized) {
+        ina226_init();
+    }
+    
+    // Create battery status update timer if not already running
+    if (battery_update_timer == NULL) {
+        battery_update_timer = lv_timer_create(battery_status_timer_cb, BATTERY_UPDATE_MS, NULL);
+        ESP_LOGI(TAG, "Battery timer created");
+    }
+    
+    // Update battery status immediately
+    update_battery_status();
+    battery_status_timer_cb(NULL);
+    
+    ESP_LOGI(TAG, "Status bar created: voltage_label=%p, charging_label=%p, timer=%p",
+             (void*)battery_voltage_label, (void*)charging_status_label, (void*)battery_update_timer);
+}
+
 // Main tile click handler
 static void main_tile_event_cb(lv_event_t *e)
 {
@@ -620,6 +813,8 @@ static void main_tile_event_cb(lv_event_t *e)
     
     if (strcmp(tile_name, "WiFi Scan & Attack") == 0) {
         show_scan_page();
+    } else if (strcmp(tile_name, "Global WiFi Attacks") == 0) {
+        show_global_attacks_page();
     } else if (strcmp(tile_name, "Network Observer") == 0) {
         show_observer_page();
     } else if (strcmp(tile_name, "Internal C6") == 0) {
@@ -628,6 +823,70 @@ static void main_tile_event_cb(lv_event_t *e)
         // Placeholder for other tiles - show a message
         ESP_LOGI(TAG, "Feature '%s' not implemented yet", tile_name);
     }
+}
+
+// Network checkbox event handler - toggle selection (0-based index)
+static void network_checkbox_event_cb(lv_event_t *e)
+{
+    lv_obj_t *cb = lv_event_get_target(e);
+    int index = (int)(intptr_t)lv_event_get_user_data(e);  // 0-based index
+    bool checked = lv_obj_has_state(cb, LV_STATE_CHECKED);
+    
+    if (checked) {
+        // Add to selected list if not already present and not full
+        bool found = false;
+        for (int i = 0; i < selected_network_count; i++) {
+            if (selected_network_indices[i] == index) {
+                found = true;
+                break;
+            }
+        }
+        if (!found && selected_network_count < MAX_NETWORKS) {
+            selected_network_indices[selected_network_count++] = index;
+            ESP_LOGI(TAG, "Selected network index %d (total: %d)", index, selected_network_count);
+        }
+    } else {
+        // Remove from selected list
+        for (int i = 0; i < selected_network_count; i++) {
+            if (selected_network_indices[i] == index) {
+                // Shift remaining elements
+                for (int j = i; j < selected_network_count - 1; j++) {
+                    selected_network_indices[j] = selected_network_indices[j + 1];
+                }
+                selected_network_count--;
+                ESP_LOGI(TAG, "Deselected network index %d (total: %d)", index, selected_network_count);
+                break;
+            }
+        }
+    }
+}
+
+// Attack tile event handler for bottom icon bar
+static void attack_tile_event_cb(lv_event_t *e)
+{
+    const char *attack_name = (const char *)lv_event_get_user_data(e);
+    ESP_LOGI(TAG, "Attack tile clicked: %s", attack_name);
+    
+    if (selected_network_count == 0) {
+        ESP_LOGW(TAG, "No networks selected for attack");
+        return;
+    }
+    
+    // Log selected networks
+    ESP_LOGI(TAG, "Selected %d network(s) for %s attack:", selected_network_count, attack_name);
+    for (int i = 0; i < selected_network_count; i++) {
+        int idx = selected_network_indices[i];
+        if (idx >= 0 && idx < network_count) {
+            ESP_LOGI(TAG, "  [%d] %s (%s)", idx, networks[idx].ssid, networks[idx].bssid);
+        }
+    }
+    
+    // TODO: Implement actual attack logic for each type
+    // - Deauth
+    // - Evil Twin  
+    // - SAE Overflow
+    // - Handshaker
+    // - Sniffer
 }
 
 // Back button click handler
@@ -674,18 +933,16 @@ static void show_main_tiles(void)
         esp_modem_spinner = NULL;
     }
     
+    // Delete Global Attacks page if present
+    if (global_attacks_page) {
+        lv_obj_del(global_attacks_page);
+        global_attacks_page = NULL;
+    }
+    
     // Delete existing tiles container if present
     if (tiles_container) {
         lv_obj_del(tiles_container);
         tiles_container = NULL;
-    }
-    
-    // Delete existing status bar if present
-    if (status_bar) {
-        lv_obj_del(status_bar);
-        status_bar = NULL;
-        battery_voltage_label = NULL;
-        charging_status_label = NULL;
     }
     
     lv_obj_t *scr = lv_scr_act();
@@ -693,49 +950,13 @@ static void show_main_tiles(void)
     // Set dark background
     lv_obj_set_style_bg_color(scr, COLOR_MATERIAL_BG, 0);
     
-    // Create status bar at top of screen
-    status_bar = lv_obj_create(scr);
-    lv_obj_set_size(status_bar, lv_pct(100), 40);
-    lv_obj_align(status_bar, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(status_bar, lv_color_make(30, 30, 30), 0);  // Slightly lighter than background
-    lv_obj_set_style_border_width(status_bar, 0, 0);
-    lv_obj_set_style_radius(status_bar, 0, 0);
-    lv_obj_set_style_pad_hor(status_bar, 16, 0);
-    lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
-    
-    // App title on the left
-    lv_obj_t *app_title = lv_label_create(status_bar);
-    lv_label_set_text(app_title, "M5Stack Tab5");
-    lv_obj_set_style_text_font(app_title, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(app_title, COLOR_MATERIAL_BLUE, 0);
-    lv_obj_align(app_title, LV_ALIGN_LEFT_MID, 0, 0);
-    
-    // Battery status container on the right
-    lv_obj_t *battery_cont = lv_obj_create(status_bar);
-    lv_obj_set_size(battery_cont, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(battery_cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(battery_cont, 0, 0);
-    lv_obj_set_style_pad_all(battery_cont, 0, 0);
-    lv_obj_align(battery_cont, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_flex_flow(battery_cont, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(battery_cont, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(battery_cont, 12, 0);
-    
-    // Battery voltage label
-    battery_voltage_label = lv_label_create(battery_cont);
-    lv_label_set_text(battery_voltage_label, "-- V");
-    lv_obj_set_style_text_font(battery_voltage_label, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(battery_voltage_label, lv_color_make(255, 255, 255), 0);
-    
-    // Charging status label
-    charging_status_label = lv_label_create(battery_cont);
-    lv_label_set_text(charging_status_label, LV_SYMBOL_BATTERY_FULL);
-    lv_obj_set_style_text_font(charging_status_label, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(charging_status_label, lv_color_make(255, 255, 255), 0);
+    // Create status bar using helper
+    create_status_bar();
     
     // Create tiles container below the status bar
     tiles_container = lv_obj_create(scr);
-    lv_obj_set_size(tiles_container, lv_pct(100), lv_pct(100) - 40);  // Subtract status bar height
+    lv_coord_t tiles_scr_height = lv_disp_get_ver_res(NULL);
+    lv_obj_set_size(tiles_container, lv_pct(100), tiles_scr_height - 40);  // Subtract status bar height
     lv_obj_align(tiles_container, LV_ALIGN_TOP_MID, 0, 40);  // Position below status bar
     lv_obj_set_style_bg_color(tiles_container, COLOR_MATERIAL_BG, 0);
     lv_obj_set_style_border_width(tiles_container, 0, 0);
@@ -755,20 +976,6 @@ static void show_main_tiles(void)
     create_tile(tiles_container, LV_SYMBOL_BLUETOOTH, "Bluetooth", COLOR_MATERIAL_CYAN, main_tile_event_cb, "Bluetooth");
     create_tile(tiles_container, LV_SYMBOL_LOOP, "Network\nObserver", COLOR_MATERIAL_TEAL, main_tile_event_cb, "Network Observer");
     create_tile(tiles_container, LV_SYMBOL_CHARGE, "Internal\nC6", lv_color_make(255, 87, 34), main_tile_event_cb, "Internal C6");  // Deep Orange
-    
-    // Initialize INA226 if not already done
-    if (!ina226_initialized) {
-        ina226_init();
-    }
-    
-    // Create battery status update timer
-    if (battery_update_timer == NULL) {
-        battery_update_timer = lv_timer_create(battery_status_timer_cb, BATTERY_UPDATE_MS, NULL);
-    }
-    
-    // Immediately update battery status
-    update_battery_status();
-    battery_status_timer_cb(NULL);
 }
 
 // Show WiFi Scanner page with Back button
@@ -778,20 +985,6 @@ static void show_scan_page(void)
     if (tiles_container) {
         lv_obj_del(tiles_container);
         tiles_container = NULL;
-    }
-    
-    // Delete status bar if present
-    if (status_bar) {
-        lv_obj_del(status_bar);
-        status_bar = NULL;
-        battery_voltage_label = NULL;
-        charging_status_label = NULL;
-    }
-    
-    // Stop battery update timer when leaving main tiles
-    if (battery_update_timer) {
-        lv_timer_del(battery_update_timer);
-        battery_update_timer = NULL;
     }
     
     // Delete existing scan page if present
@@ -805,14 +998,19 @@ static void show_scan_page(void)
     // Set dark background
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A1A), 0);
     
-    // Create scan page container
+    // Create/update status bar
+    create_status_bar();
+    
+    // Create scan page container below status bar
     scan_page = lv_obj_create(scr);
-    lv_obj_set_size(scan_page, lv_pct(100), lv_pct(100));
+    lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
+    lv_obj_set_size(scan_page, lv_pct(100), scr_height - 40);  // Full height minus status bar
+    lv_obj_align(scan_page, LV_ALIGN_TOP_MID, 0, 40);  // Position below status bar
     lv_obj_set_style_bg_color(scan_page, lv_color_hex(0x1A1A1A), 0);
     lv_obj_set_style_border_width(scan_page, 0, 0);
-    lv_obj_set_style_pad_all(scan_page, 16, 0);
+    lv_obj_set_style_pad_all(scan_page, 4, 0);  // Minimal padding for maximum list space
     lv_obj_set_flex_flow(scan_page, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(scan_page, 12, 0);
+    lv_obj_set_style_pad_row(scan_page, 2, 0);  // Minimal gap
     
     // Header container
     lv_obj_t *header = lv_obj_create(scan_page);
@@ -848,7 +1046,7 @@ static void show_scan_page(void)
     
     // Title
     lv_obj_t *title = lv_label_create(left_cont);
-    lv_label_set_text(title, "WiFi Scanner");
+    lv_label_set_text(title, "Scan & Attack");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(title, COLOR_MATERIAL_BLUE, 0);
     
@@ -878,29 +1076,47 @@ static void show_scan_page(void)
     lv_obj_add_event_cb(scan_btn, scan_btn_click_cb, LV_EVENT_CLICKED, NULL);
     
     lv_obj_t *btn_label = lv_label_create(scan_btn);
-    lv_label_set_text(btn_label, "SCAN");
+    lv_label_set_text(btn_label, "RESCAN");
     lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(btn_label, lv_color_hex(0xFFFFFF), 0);
     lv_obj_center(btn_label);
     
-    // Status label
+    // Status label (compact)
     status_label = lv_label_create(scan_page);
-    lv_label_set_text(status_label, "Press SCAN to search for networks");
-    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
+    lv_label_set_text(status_label, "Press RESCAN to search for networks");
+    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(status_label, lv_color_hex(0x888888), 0);
     
-    // Network list container (scrollable)
+    // Network list container (scrollable) - fills remaining space above attack bar
     network_list = lv_obj_create(scan_page);
-    lv_obj_set_size(network_list, lv_pct(100), lv_pct(100));
-    lv_obj_set_flex_grow(network_list, 1);
+    lv_obj_set_width(network_list, lv_pct(100));
+    lv_obj_set_flex_grow(network_list, 1);  // Take all remaining vertical space
     lv_obj_set_style_bg_color(network_list, lv_color_hex(0x1A1A1A), 0);
     lv_obj_set_style_border_color(network_list, lv_color_hex(0x333333), 0);
     lv_obj_set_style_border_width(network_list, 1, 0);
-    lv_obj_set_style_radius(network_list, 12, 0);
-    lv_obj_set_style_pad_all(network_list, 8, 0);
+    lv_obj_set_style_radius(network_list, 8, 0);
+    lv_obj_set_style_pad_all(network_list, 6, 0);
     lv_obj_set_flex_flow(network_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(network_list, 8, 0);
+    lv_obj_set_style_pad_row(network_list, 6, 0);
     lv_obj_set_scroll_dir(network_list, LV_DIR_VER);
+    
+    // Bottom icon bar for attack tiles
+    lv_obj_t *attack_bar = lv_obj_create(scan_page);
+    lv_obj_set_size(attack_bar, lv_pct(100), 70);
+    lv_obj_set_style_bg_color(attack_bar, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_border_width(attack_bar, 0, 0);
+    lv_obj_set_style_pad_all(attack_bar, 5, 0);
+    lv_obj_set_style_pad_gap(attack_bar, 8, 0);
+    lv_obj_set_flex_flow(attack_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(attack_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(attack_bar, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Create attack tiles in the bottom bar
+    create_small_tile(attack_bar, LV_SYMBOL_CHARGE, "Deauth", COLOR_MATERIAL_RED, attack_tile_event_cb, "Deauth");
+    create_small_tile(attack_bar, LV_SYMBOL_WARNING, "EvilTwin", COLOR_MATERIAL_ORANGE, attack_tile_event_cb, "Evil Twin");
+    create_small_tile(attack_bar, LV_SYMBOL_POWER, "SAE", COLOR_MATERIAL_PINK, attack_tile_event_cb, "SAE Overflow");
+    create_small_tile(attack_bar, LV_SYMBOL_DOWNLOAD, "Handshake", COLOR_MATERIAL_AMBER, attack_tile_event_cb, "Handshaker");
+    create_small_tile(attack_bar, LV_SYMBOL_EYE_OPEN, "Sniffer", COLOR_MATERIAL_PURPLE, attack_tile_event_cb, "Sniffer");
     
     // Auto-start scan when entering the page
     lv_obj_send_event(scan_btn, LV_EVENT_CLICKED, NULL);
@@ -2057,20 +2273,6 @@ static void show_observer_page(void)
         tiles_container = NULL;
     }
     
-    // Delete status bar if present
-    if (status_bar) {
-        lv_obj_del(status_bar);
-        status_bar = NULL;
-        battery_voltage_label = NULL;
-        charging_status_label = NULL;
-    }
-    
-    // Stop battery update timer when leaving main tiles
-    if (battery_update_timer) {
-        lv_timer_del(battery_update_timer);
-        battery_update_timer = NULL;
-    }
-    
     // Delete scan page if present
     if (scan_page) {
         lv_obj_del(scan_page);
@@ -2092,9 +2294,14 @@ static void show_observer_page(void)
     // Set dark background
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0A1A1A), 0);  // Dark teal-tinted
     
-    // Create observer page container
+    // Create/update status bar
+    create_status_bar();
+    
+    // Create observer page container below status bar
     observer_page = lv_obj_create(scr);
-    lv_obj_set_size(observer_page, lv_pct(100), lv_pct(100));
+    lv_coord_t obs_scr_height = lv_disp_get_ver_res(NULL);
+    lv_obj_set_size(observer_page, lv_pct(100), obs_scr_height - 40);  // Account for status bar
+    lv_obj_align(observer_page, LV_ALIGN_TOP_MID, 0, 40);  // Position below status bar
     lv_obj_set_style_bg_color(observer_page, lv_color_hex(0x0A1A1A), 0);
     lv_obj_set_style_border_width(observer_page, 0, 0);
     lv_obj_set_style_pad_all(observer_page, 16, 0);
@@ -2505,20 +2712,6 @@ static void show_esp_modem_page(void)
         tiles_container = NULL;
     }
     
-    // Delete status bar if present
-    if (status_bar) {
-        lv_obj_del(status_bar);
-        status_bar = NULL;
-        battery_voltage_label = NULL;
-        charging_status_label = NULL;
-    }
-    
-    // Stop battery update timer when leaving main tiles
-    if (battery_update_timer) {
-        lv_timer_del(battery_update_timer);
-        battery_update_timer = NULL;
-    }
-    
     // Delete scan page if present
     if (scan_page) {
         lv_obj_del(scan_page);
@@ -2550,9 +2743,14 @@ static void show_esp_modem_page(void)
     // Set dark background with orange tint
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1410), 0);
     
-    // Create ESP Modem page container
+    // Create/update status bar
+    create_status_bar();
+    
+    // Create ESP Modem page container below status bar
     esp_modem_page = lv_obj_create(scr);
-    lv_obj_set_size(esp_modem_page, lv_pct(100), lv_pct(100));
+    lv_coord_t modem_scr_height = lv_disp_get_ver_res(NULL);
+    lv_obj_set_size(esp_modem_page, lv_pct(100), modem_scr_height - 40);  // Account for status bar
+    lv_obj_align(esp_modem_page, LV_ALIGN_TOP_MID, 0, 40);  // Position below status bar
     lv_obj_set_style_bg_color(esp_modem_page, lv_color_hex(0x1A1410), 0);
     lv_obj_set_style_border_width(esp_modem_page, 0, 0);
     lv_obj_set_style_pad_all(esp_modem_page, 16, 0);
@@ -2655,6 +2853,141 @@ static void show_esp_modem_page(void)
     
     // Auto-start scan when entering the page
     lv_obj_send_event(esp_modem_scan_btn, LV_EVENT_CLICKED, NULL);
+}
+
+// Global attack tile event handler
+static void global_attack_tile_event_cb(lv_event_t *e)
+{
+    const char *attack_name = (const char *)lv_event_get_user_data(e);
+    ESP_LOGI(TAG, "Global attack tile clicked: %s", attack_name);
+    
+    // TODO: Implement actual attack logic for each type
+    // - Blackout
+    // - Handshakes
+    // - Portal
+    // - Snifferdog
+    // - Wardrive
+}
+
+// Show Global WiFi Attacks page
+static void show_global_attacks_page(void)
+{
+    // Delete tiles container if present
+    if (tiles_container) {
+        lv_obj_del(tiles_container);
+        tiles_container = NULL;
+    }
+    
+    // Delete scan page if present
+    if (scan_page) {
+        lv_obj_del(scan_page);
+        scan_page = NULL;
+        scan_btn = NULL;
+        status_label = NULL;
+        network_list = NULL;
+        spinner = NULL;
+    }
+    
+    // Delete observer page if present
+    if (observer_page) {
+        lv_obj_del(observer_page);
+        observer_page = NULL;
+        observer_start_btn = NULL;
+        observer_stop_btn = NULL;
+        observer_table = NULL;
+        observer_status_label = NULL;
+    }
+    
+    // Delete ESP Modem page if present
+    if (esp_modem_page) {
+        lv_obj_del(esp_modem_page);
+        esp_modem_page = NULL;
+        esp_modem_scan_btn = NULL;
+        esp_modem_status_label = NULL;
+        esp_modem_network_list = NULL;
+        esp_modem_spinner = NULL;
+    }
+    
+    // Delete existing global attacks page if present
+    if (global_attacks_page) {
+        lv_obj_del(global_attacks_page);
+        global_attacks_page = NULL;
+    }
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Set dark background
+    lv_obj_set_style_bg_color(scr, COLOR_MATERIAL_BG, 0);
+    
+    // Create/update status bar
+    create_status_bar();
+    
+    // Create global attacks page container below status bar
+    global_attacks_page = lv_obj_create(scr);
+    lv_coord_t attacks_scr_height = lv_disp_get_ver_res(NULL);
+    lv_obj_set_size(global_attacks_page, lv_pct(100), attacks_scr_height - 40);  // Account for status bar
+    lv_obj_align(global_attacks_page, LV_ALIGN_TOP_MID, 0, 40);  // Position below status bar
+    lv_obj_set_style_bg_color(global_attacks_page, COLOR_MATERIAL_BG, 0);
+    lv_obj_set_style_border_width(global_attacks_page, 0, 0);
+    lv_obj_set_style_pad_all(global_attacks_page, 16, 0);
+    lv_obj_set_flex_flow(global_attacks_page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(global_attacks_page, 12, 0);
+    
+    // Header with back button and title
+    lv_obj_t *header = lv_obj_create(global_attacks_page);
+    lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_set_style_pad_all(header, 0, 0);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(header, 12, 0);
+    
+    // Back button
+    lv_obj_t *back_btn = lv_btn_create(header);
+    lv_obj_set_size(back_btn, 48, 40);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(back_btn, 8, 0);
+    lv_obj_add_event_cb(back_btn, back_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *back_icon = lv_label_create(back_btn);
+    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(back_icon, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(back_icon);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "Global WiFi Attacks");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_RED, 0);
+    
+    // Tiles container
+    lv_obj_t *tiles = lv_obj_create(global_attacks_page);
+    lv_obj_set_size(tiles, lv_pct(100), lv_pct(100));
+    lv_obj_set_flex_grow(tiles, 1);
+    lv_obj_set_style_bg_color(tiles, COLOR_MATERIAL_BG, 0);
+    lv_obj_set_style_border_width(tiles, 0, 0);
+    lv_obj_set_style_pad_all(tiles, 10, 0);
+    lv_obj_set_style_pad_gap(tiles, 20, 0);
+    lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    
+    // Create 5 attack tiles
+    // Blackout - Red (dangerous)
+    create_tile(tiles, LV_SYMBOL_POWER, "Blackout", COLOR_MATERIAL_RED, global_attack_tile_event_cb, "Blackout");
+    
+    // Handshaker - Amber
+    create_tile(tiles, LV_SYMBOL_DOWNLOAD, "Handshaker", COLOR_MATERIAL_AMBER, global_attack_tile_event_cb, "Handshakes");
+    
+    // Portal - Orange
+    create_tile(tiles, LV_SYMBOL_WIFI, "Portal", COLOR_MATERIAL_ORANGE, global_attack_tile_event_cb, "Portal");
+    
+    // SnifferDog - Purple
+    create_tile(tiles, LV_SYMBOL_EYE_OPEN, "SnifferDog", COLOR_MATERIAL_PURPLE, global_attack_tile_event_cb, "Snifferdog");
+    
+    // Wardrive - Teal
+    create_tile(tiles, LV_SYMBOL_GPS, "Wardrive", COLOR_MATERIAL_TEAL, global_attack_tile_event_cb, "Wardrive");
 }
 
 void app_main(void)
