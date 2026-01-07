@@ -17,7 +17,6 @@
 #include "driver/gpio.h"
 #include "bsp/m5stack_tab5.h"
 #include "lvgl.h"
-#include "lvgl_memory.h"
 
 // ESP-Hosted includes for WiFi via ESP32C6 SDIO
 #include "esp_hosted.h"
@@ -3641,9 +3640,6 @@ void app_main(void)
     
     // Initialize UART for ESP32C5 communication
     uart_init();
-    
-    // Initialize LVGL custom PSRAM allocator
-    lvgl_memory_init();
     
     // Initialize display
     lv_display_t *disp = bsp_display_start();
