@@ -1703,6 +1703,8 @@ lv_display_t* bsp_display_start(void)
                                  .buff_spiram = true,
                                  .sw_rotate   = true,
                              }};
+    // Increase LVGL task stack size for complex UIs with spinners and overlays
+    cfg.lvgl_port_cfg.task_stack = 16384;
     return bsp_display_start_with_config(&cfg);
 }
 

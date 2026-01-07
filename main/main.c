@@ -140,6 +140,7 @@ static lv_obj_t *scan_deauth_overlay = NULL;  // Modal overlay
 static lv_obj_t *scan_deauth_popup_obj = NULL;
 
 // Evil Twin attack state
+static lv_obj_t *evil_twin_loading_overlay = NULL;  // Loading overlay while fetching
 static lv_obj_t *evil_twin_overlay = NULL;  // Modal overlay
 static lv_obj_t *evil_twin_popup_obj = NULL;
 static lv_obj_t *evil_twin_network_dropdown = NULL;
@@ -151,6 +152,13 @@ static int evil_twin_html_count = 0;
 // SAE Overflow attack state
 static lv_obj_t *sae_popup_overlay = NULL;
 static lv_obj_t *sae_popup_obj = NULL;
+
+// Handshaker attack state
+static lv_obj_t *handshaker_popup_overlay = NULL;
+static lv_obj_t *handshaker_popup_obj = NULL;
+static lv_obj_t *handshaker_status_label = NULL;
+static volatile bool handshaker_monitoring = false;
+static TaskHandle_t handshaker_monitor_task_handle = NULL;
 static char evil_twin_html_files[20][64];  // Max 20 files, 64 chars each
 static volatile bool evil_twin_monitoring = false;
 static TaskHandle_t evil_twin_monitor_task_handle = NULL;
@@ -189,6 +197,7 @@ static lv_obj_t *scan_btn = NULL;
 static lv_obj_t *status_label = NULL;
 static lv_obj_t *network_list = NULL;
 static lv_obj_t *spinner = NULL;
+static lv_obj_t *scan_overlay = NULL;
 
 // LVGL UI elements - observer page
 static lv_obj_t *observer_start_btn = NULL;
@@ -237,6 +246,13 @@ static void evil_twin_close_cb(lv_event_t *e);
 static void evil_twin_monitor_task(void *arg);
 static void show_sae_popup(int network_idx);
 static void sae_popup_close_cb(lv_event_t *e);
+static void show_handshaker_popup(void);
+static void handshaker_popup_close_cb(lv_event_t *e);
+static void handshaker_monitor_task(void *arg);
+static void show_scan_overlay(void);
+static void hide_scan_overlay(void);
+static void show_evil_twin_loading_overlay(void);
+static void hide_evil_twin_loading_overlay(void);
 
 //==================================================================================
 // INA226 Power Monitor Driver
@@ -654,12 +670,86 @@ static void wifi_scan_task(void *arg)
         lv_obj_clear_state(scan_btn, LV_STATE_DISABLED);
     }
     
+    // Hide small spinner
+    if (spinner) {
+        lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+    }
+    
+    // Hide large centered overlay
+    hide_scan_overlay();
+    
     scan_in_progress = false;
     
     bsp_display_unlock();
     
     // Delete this task
     vTaskDelete(NULL);
+}
+
+// Show centered scanning overlay with large spinner
+static void show_scan_overlay(void) {
+    if (scan_overlay) return;
+    
+    scan_overlay = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(scan_overlay);
+    lv_obj_set_size(scan_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(scan_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(scan_overlay, LV_OPA_70, 0);
+    lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_CLICKABLE);  // Block clicks on elements below
+    
+    // Large centered spinner
+    lv_obj_t *spin = lv_spinner_create(scan_overlay);
+    lv_obj_set_size(spin, 100, 100);
+    lv_spinner_set_anim_params(spin, 1000, 200);
+    lv_obj_center(spin);
+    
+    // "Scanning..." label below spinner
+    lv_obj_t *label = lv_label_create(scan_overlay);
+    lv_label_set_text(label, "Scanning...");
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 80);
+}
+
+// Hide scanning overlay
+static void hide_scan_overlay(void) {
+    if (scan_overlay) {
+        lv_obj_del(scan_overlay);
+        scan_overlay = NULL;
+    }
+}
+
+// Show Evil Twin loading overlay with spinner
+static void show_evil_twin_loading_overlay(void) {
+    if (evil_twin_loading_overlay) return;
+    
+    evil_twin_loading_overlay = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(evil_twin_loading_overlay);
+    lv_obj_set_size(evil_twin_loading_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(evil_twin_loading_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(evil_twin_loading_overlay, LV_OPA_70, 0);
+    lv_obj_add_flag(evil_twin_loading_overlay, LV_OBJ_FLAG_CLICKABLE);  // Block clicks
+    
+    // Large centered spinner
+    lv_obj_t *spin = lv_spinner_create(evil_twin_loading_overlay);
+    lv_obj_set_size(spin, 100, 100);
+    lv_spinner_set_anim_params(spin, 1000, 200);
+    lv_obj_center(spin);
+    
+    // "Loading..." label below spinner
+    lv_obj_t *label = lv_label_create(evil_twin_loading_overlay);
+    lv_label_set_text(label, "Loading portals...");
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 80);
+}
+
+// Hide Evil Twin loading overlay
+static void hide_evil_twin_loading_overlay(void) {
+    if (evil_twin_loading_overlay) {
+        lv_obj_del(evil_twin_loading_overlay);
+        evil_twin_loading_overlay = NULL;
+    }
 }
 
 // Scan button click handler
@@ -679,7 +769,10 @@ static void scan_btn_click_cb(lv_event_t *e)
     // Disable button during scan
     lv_obj_add_state(scan_btn, LV_STATE_DISABLED);
     
-    // Show spinner
+    // Show large centered overlay with spinner
+    show_scan_overlay();
+    
+    // Show small spinner next to button (optional backup)
     if (spinner) {
         lv_obj_clear_flag(spinner, LV_OBJ_FLAG_HIDDEN);
     }
@@ -990,9 +1083,14 @@ static void attack_tile_event_cb(lv_event_t *e)
         return;
     }
     
-    // TODO: Implement other attack types
-    // - Handshaker
-    // - Sniffer
+    // Handle Handshaker attack
+    if (strcmp(attack_name, "Handshaker") == 0) {
+        // First show popup, then send commands and start monitoring
+        show_handshaker_popup();
+        return;
+    }
+    
+    // TODO: Implement Sniffer attack
 }
 
 // Close callback for scan deauth popup - sends stop command
@@ -1194,6 +1292,198 @@ static void show_sae_popup(int network_idx)
     lv_label_set_text(stop_label, "STOP");
     lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_18, 0);
     lv_obj_center(stop_label);
+}
+
+// ======================= Handshaker Attack Functions =======================
+
+// Close Handshaker popup - sends stop command
+static void handshaker_popup_close_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Handshaker popup closed - sending stop command");
+    
+    // Stop monitoring task
+    handshaker_monitoring = false;
+    if (handshaker_monitor_task_handle != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(100));  // Give task time to exit
+        handshaker_monitor_task_handle = NULL;
+    }
+    
+    // Send stop command
+    uart_send_command("stop");
+    
+    // Delete overlay (popup is child, will be deleted too)
+    if (handshaker_popup_overlay) {
+        lv_obj_del(handshaker_popup_overlay);
+        handshaker_popup_overlay = NULL;
+        handshaker_popup_obj = NULL;
+        handshaker_status_label = NULL;
+    }
+}
+
+// Handshaker monitor task - reads UART for handshake capture
+static void handshaker_monitor_task(void *arg)
+{
+    ESP_LOGI(TAG, "Handshaker monitor task started");
+    
+    static char rx_buffer[512];
+    static char line_buffer[256];
+    int line_pos = 0;
+    
+    while (handshaker_monitoring) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            
+            for (int i = 0; i < len; i++) {
+                char c = rx_buffer[i];
+                
+                if (c == '\n' || c == '\r') {
+                    if (line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
+                        ESP_LOGI(TAG, "Handshaker UART: %s", line_buffer);
+                        
+                        // Check for handshake captured message
+                        if (strstr(line_buffer, "Handshake captured") != NULL ||
+                            strstr(line_buffer, "handshake saved") != NULL ||
+                            strstr(line_buffer, "EAPOL") != NULL) {
+                            
+                            // Update status label on UI thread
+                            bsp_display_lock(0);
+                            if (handshaker_status_label) {
+                                lv_label_set_text(handshaker_status_label, line_buffer);
+                                lv_obj_set_style_text_color(handshaker_status_label, COLOR_MATERIAL_GREEN, 0);
+                            }
+                            bsp_display_unlock();
+                        }
+                        
+                        line_pos = 0;
+                    }
+                } else if (line_pos < (int)sizeof(line_buffer) - 1) {
+                    line_buffer[line_pos++] = c;
+                }
+            }
+        }
+    }
+    
+    ESP_LOGI(TAG, "Handshaker monitor task ended");
+    handshaker_monitor_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+// Show Handshaker popup with list of selected networks
+static void show_handshaker_popup(void)
+{
+    if (handshaker_popup_obj != NULL) return;  // Already showing
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Create modal overlay (full screen, semi-transparent, blocks input behind)
+    handshaker_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(handshaker_popup_overlay);
+    lv_obj_set_size(handshaker_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(handshaker_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(handshaker_popup_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(handshaker_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(handshaker_popup_overlay, LV_OBJ_FLAG_CLICKABLE);  // Capture clicks
+    
+    // Create popup as child of overlay
+    handshaker_popup_obj = lv_obj_create(handshaker_popup_overlay);
+    lv_obj_set_size(handshaker_popup_obj, 550, 450);
+    lv_obj_center(handshaker_popup_obj);
+    lv_obj_set_style_bg_color(handshaker_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(handshaker_popup_obj, COLOR_MATERIAL_AMBER, 0);
+    lv_obj_set_style_border_width(handshaker_popup_obj, 2, 0);
+    lv_obj_set_style_radius(handshaker_popup_obj, 16, 0);
+    lv_obj_set_style_shadow_width(handshaker_popup_obj, 30, 0);
+    lv_obj_set_style_shadow_color(handshaker_popup_obj, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(handshaker_popup_obj, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(handshaker_popup_obj, 16, 0);
+    lv_obj_set_flex_flow(handshaker_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(handshaker_popup_obj, 12, 0);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(handshaker_popup_obj);
+    lv_label_set_text(title, "Handshaker Attack Active");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_AMBER, 0);
+    
+    // Subtitle with network list
+    lv_obj_t *subtitle = lv_label_create(handshaker_popup_obj);
+    lv_label_set_text(subtitle, "on networks:");
+    lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(subtitle, lv_color_hex(0xCCCCCC), 0);
+    
+    // Scrollable container for network list
+    lv_obj_t *network_scroll = lv_obj_create(handshaker_popup_obj);
+    lv_obj_set_size(network_scroll, lv_pct(100), 180);
+    lv_obj_set_style_bg_color(network_scroll, lv_color_hex(0x252535), 0);
+    lv_obj_set_style_border_width(network_scroll, 0, 0);
+    lv_obj_set_style_radius(network_scroll, 8, 0);
+    lv_obj_set_style_pad_all(network_scroll, 8, 0);
+    lv_obj_set_flex_flow(network_scroll, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(network_scroll, 6, 0);
+    lv_obj_set_scroll_dir(network_scroll, LV_DIR_VER);
+    
+    // Add selected networks to list
+    for (int i = 0; i < selected_network_count; i++) {
+        int idx = selected_network_indices[i];
+        if (idx >= 0 && idx < network_count) {
+            wifi_network_t *net = &networks[idx];
+            const char *ssid_display = strlen(net->ssid) > 0 ? net->ssid : "(Hidden)";
+            
+            lv_obj_t *info_label = lv_label_create(network_scroll);
+            lv_label_set_text_fmt(info_label, "%s %s\nBSSID: %s | %s", 
+                                  LV_SYMBOL_WIFI, ssid_display, net->bssid, net->band);
+            lv_obj_set_style_text_font(info_label, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(info_label, lv_color_hex(0xFFFFFF), 0);
+        }
+    }
+    
+    // Status label (for handshake capture messages)
+    handshaker_status_label = lv_label_create(handshaker_popup_obj);
+    lv_label_set_text(handshaker_status_label, "Waiting for handshake...");
+    lv_obj_set_style_text_font(handshaker_status_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(handshaker_status_label, lv_color_hex(0x888888), 0);
+    
+    // STOP button
+    lv_obj_t *stop_btn = lv_btn_create(handshaker_popup_obj);
+    lv_obj_set_size(stop_btn, lv_pct(100), 50);
+    lv_obj_set_style_bg_color(stop_btn, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_bg_color(stop_btn, lv_color_hex(0xCC0000), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(stop_btn, 8, 0);
+    lv_obj_add_event_cb(stop_btn, handshaker_popup_close_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *stop_label = lv_label_create(stop_btn);
+    lv_label_set_text(stop_label, "STOP");
+    lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_18, 0);
+    lv_obj_center(stop_label);
+    
+    // Now send UART commands and start monitoring
+    
+    // Build select_networks command with 1-based indices
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "select_networks");
+    for (int i = 0; i < selected_network_count; i++) {
+        int idx = selected_network_indices[i];
+        if (idx >= 0 && idx < network_count) {
+            char num[8];
+            snprintf(num, sizeof(num), " %d", networks[idx].index);  // .index is 1-based
+            strncat(cmd, num, sizeof(cmd) - strlen(cmd) - 1);
+        }
+    }
+    
+    // Send select_networks command
+    uart_send_command(cmd);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Send start_handshake command
+    uart_send_command("start_handshake");
+    
+    // Start monitoring task
+    handshaker_monitoring = true;
+    xTaskCreate(handshaker_monitor_task, "hs_monitor", 4096, NULL, 5, &handshaker_monitor_task_handle);
 }
 
 // ======================= Evil Twin Attack Functions =======================
@@ -1494,8 +1784,15 @@ static void show_evil_twin_popup(void)
 {
     if (evil_twin_popup_obj != NULL) return;  // Already showing
     
-    // First fetch HTML files from SD
+    // Show loading overlay while fetching HTML files
+    show_evil_twin_loading_overlay();
+    lv_refr_now(NULL);  // Force immediate UI refresh to show overlay
+    
+    // Fetch HTML files from SD (this takes a few seconds)
     fetch_html_files_from_sd();
+    
+    // Hide loading overlay
+    hide_evil_twin_loading_overlay();
     
     if (evil_twin_html_count == 0) {
         ESP_LOGW(TAG, "No HTML files found on SD card");
