@@ -69,6 +69,7 @@ static const char *TAG = "wifi_scanner";
 
 // Maximum networks to display
 #define MAX_NETWORKS      50
+#define MAX_OBSERVER_NETWORKS  100  // More capacity for background scanning
 #define MAX_CLIENTS_PER_NETWORK  20
 #define OBSERVER_POLL_INTERVAL_MS  20000  // 20 seconds
 #define OBSERVER_LINE_BUFFER_SIZE  512
@@ -187,6 +188,12 @@ static uint8_t uart1_pins_mode = 1;   // 0=M5Bus(38/37), 1=Grove(53/54) - defaul
 #define UART2_NUM UART_NUM_2
 static bool uart2_initialized = false;
 
+// Kraken background scanning state
+static bool kraken_scanning_active = false;    // UART2 scanning running
+static bool observer_page_visible = false;     // Observer page is currently shown
+static TaskHandle_t kraken_scan_task_handle = NULL;
+static lv_obj_t *kraken_eye_icon = NULL;       // Eye icon in status bar
+
 // ESP Modem global variables
 static wifi_ap_record_t *esp_modem_networks = NULL;  // Allocated in PSRAM
 static uint16_t esp_modem_network_count = 0;
@@ -285,6 +292,10 @@ static void get_uart2_pins(uint8_t uart1_mode, int *tx_pin, int *rx_pin);
 static void init_uart2(void);
 static void deinit_uart2(void);
 static void load_hw_config_from_nvs(void);
+static void kraken_scan_task(void *arg);
+static void start_kraken_scanning(void);
+static void stop_kraken_scanning(void);
+static void update_kraken_eye_icon(void);
 
 //==================================================================================
 // INA226 Power Monitor Driver
@@ -333,8 +344,8 @@ static esp_err_t ina226_init(void)
         return ret;
     }
     
-    uint16_t mfg_id = (data[0] << 8) | data[1];
-    ESP_LOGI(TAG, "INA226 Manufacturer ID: 0x%04X (expected 0x5449)", mfg_id);
+        uint16_t mfg_id = (data[0] << 8) | data[1];
+        ESP_LOGI(TAG, "INA226 Manufacturer ID: 0x%04X (expected 0x5449)", mfg_id);
     
     if (mfg_id != 0x5449) {
         ESP_LOGE(TAG, "INA226 manufacturer ID mismatch - device not responding correctly");
@@ -427,9 +438,8 @@ static void battery_status_timer_cb(lv_timer_t *timer)
     size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA);
     size_t dma_min = heap_caps_get_minimum_free_size(MALLOC_CAP_DMA);
     
-    // Debug log with battery and memory stats
-    ESP_LOGI(TAG, "Battery: %.2fV, charging: %d", current_battery_voltage, current_charging_status);
-    ESP_LOGI(TAG, "Memory - PSRAM: %u KB free (min: %u KB) | SRAM: %u KB free (min: %u KB) | DMA: %u KB free (min: %u KB)",
+    // Memory stats only (no battery log to reduce noise)
+    ESP_LOGD(TAG, "Memory - PSRAM: %u KB free (min: %u KB) | SRAM: %u KB free (min: %u KB) | DMA: %u KB free (min: %u KB)",
              (unsigned)(psram_free / 1024), (unsigned)(psram_min / 1024),
              (unsigned)(sram_free / 1024), (unsigned)(sram_min / 1024),
              (unsigned)(dma_free / 1024), (unsigned)(dma_min / 1024));
@@ -1040,6 +1050,7 @@ static void create_status_bar(void)
         status_bar = NULL;
         battery_voltage_label = NULL;
         charging_status_label = NULL;
+        kraken_eye_icon = NULL;  // Reset eye icon pointer
     }
     
     // Create status bar at top of screen
@@ -1058,6 +1069,14 @@ static void create_status_bar(void)
     lv_obj_set_style_text_font(app_title, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(app_title, lv_color_make(255, 255, 255), 0);
     lv_obj_align(app_title, LV_ALIGN_CENTER, 0, 0);
+    
+    // Kraken eye icon (shown when background scanning is active) - left of battery
+    kraken_eye_icon = lv_label_create(status_bar);
+    lv_label_set_text(kraken_eye_icon, LV_SYMBOL_EYE_OPEN);
+    lv_obj_set_style_text_font(kraken_eye_icon, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(kraken_eye_icon, COLOR_MATERIAL_CYAN, 0);
+    lv_obj_align(kraken_eye_icon, LV_ALIGN_RIGHT_MID, -160, 0);  // Left of battery container
+    lv_obj_add_flag(kraken_eye_icon, LV_OBJ_FLAG_HIDDEN);  // Hidden by default
     
     // Battery status container on the right - use fixed width to ensure visibility
     lv_obj_t *battery_cont = lv_obj_create(status_bar);
@@ -2193,6 +2212,9 @@ static void show_main_tiles(void)
     // Create status bar using helper
     create_status_bar();
     
+    // Update eye icon visibility (show if Kraken is scanning in background)
+    update_kraken_eye_icon();
+    
     // Create tiles container below the status bar
     tiles_container = lv_obj_create(scr);
     lv_coord_t tiles_scr_height = lv_disp_get_ver_res(NULL);
@@ -2428,11 +2450,18 @@ static void close_network_popup(void)
     }
     
     // Send unselect_networks to monitor all networks again
-    uart_send_command("unselect_networks");
-    vTaskDelay(pdMS_TO_TICKS(100));
-    
-    // Restart sniffer for all networks (without new scan)
-    uart_send_command("start_sniffer_noscan");
+    // Use UART2 in Kraken mode, UART1 in Monster mode
+    if (hw_config == 1) {
+        // Kraken mode - use UART2
+        uart2_send_command("unselect_networks");
+        vTaskDelay(pdMS_TO_TICKS(100));
+        uart2_send_command("start_sniffer_noscan");
+    } else {
+        // Monster mode - use UART1
+        uart_send_command("unselect_networks");
+        vTaskDelay(pdMS_TO_TICKS(100));
+        uart_send_command("start_sniffer_noscan");
+    }
     
     // Close popup UI
     if (popup_obj) {
@@ -2475,17 +2504,25 @@ static void show_network_popup(int network_idx)
     }
     
     // Send commands to focus on this network
-    uart_send_command("stop");
-    vTaskDelay(pdMS_TO_TICKS(200));
-    
-    // Send select_networks with the scan index
+    // Use UART2 in Kraken mode, UART1 in Monster mode
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "select_networks %d", net->scan_index);
-    uart_send_command(cmd);
-    vTaskDelay(pdMS_TO_TICKS(100));
     
-    // Start sniffer for selected network only
-    uart_send_command("start_sniffer");
+    if (hw_config == 1) {
+        // Kraken mode - use UART2
+        uart2_send_command("stop");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        uart2_send_command(cmd);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        uart2_send_command("start_sniffer");
+    } else {
+        // Monster mode - use UART1
+        uart_send_command("stop");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        uart_send_command(cmd);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        uart_send_command("start_sniffer");
+    }
     
     // Create popup overlay
     lv_obj_t *scr = lv_scr_act();
@@ -2647,8 +2684,15 @@ static void popup_poll_task(void *arg)
         return;
     }
     
-    uart_flush(UART_NUM);
-    uart_send_command("show_sniffer_results");
+    // Use UART2 in Kraken mode, UART1 in Monster mode
+    uart_port_t uart_port = (hw_config == 1) ? UART2_NUM : UART_NUM;
+    
+    uart_flush(uart_port);
+    if (hw_config == 1) {
+        uart2_send_command("show_sniffer_results");
+    } else {
+        uart_send_command("show_sniffer_results");
+    }
     
     char *rx_buffer = observer_rx_buffer;
     char *line_buffer = observer_line_buffer;
@@ -2661,7 +2705,7 @@ static void popup_poll_task(void *arg)
     TickType_t timeout_ticks = pdMS_TO_TICKS(5000);
     
     while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
-        int len = uart_read_bytes(UART_NUM, rx_buffer, UART_BUF_SIZE - 1, pdMS_TO_TICKS(100));
+        int len = uart_read_bytes(uart_port, (uint8_t*)rx_buffer, UART_BUF_SIZE - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
             rx_buffer[len] = '\0';
@@ -3451,7 +3495,20 @@ static void observer_start_btn_cb(lv_event_t *e)
         lv_obj_clean(observer_table);
     }
     
-    // Start observer task
+    // In Kraken mode, use UART2 background scanning only - don't start UART1 task
+    if (hw_config == 1 && kraken_scanning_active) {
+        ESP_LOGI(TAG, "Kraken mode: using UART2 background scanning only");
+        lv_label_set_text(observer_status_label, "Kraken: UART2 scanning...");
+        lv_obj_set_style_text_color(observer_status_label, COLOR_MATERIAL_CYAN, 0);
+        
+        // Show existing data if available
+        if (observer_network_count > 0) {
+            update_observer_table();
+        }
+        return;  // Don't start UART1 task
+    }
+    
+    // Monster mode: use UART1 observer task
     xTaskCreate(observer_start_task, "obs_start", 8192, NULL, 5, NULL);
 }
 
@@ -3473,15 +3530,22 @@ static void observer_stop_btn_cb(lv_event_t *e)
         xTimerStop(observer_timer, 0);
     }
     
-    // Send stop command
+    // Send stop command only in Monster mode (UART1)
+    // In Kraken mode, UART2 background scanning continues
+    if (hw_config == 0) {
     uart_send_command("stop");
+    }
     
     // Update UI
     lv_obj_clear_state(observer_start_btn, LV_STATE_DISABLED);
     lv_obj_add_state(observer_stop_btn, LV_STATE_DISABLED);
     
     if (observer_status_label) {
+        if (hw_config == 1) {
+            lv_label_set_text(observer_status_label, "Paused (UART2 scanning in background)");
+        } else {
         lv_label_set_text(observer_status_label, "Stopped");
+        }
     }
 }
 
@@ -3491,14 +3555,24 @@ static void observer_back_btn_event_cb(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "Observer back button clicked");
     
-    // Stop observer if running
+    // Mark observer page as not visible
+    observer_page_visible = false;
+    
+    // In Kraken mode, keep UART2 scanning running in background
+    // Only stop UART1-based scanning
     if (observer_running) {
         observer_running = false;
         if (observer_timer != NULL) {
             xTimerStop(observer_timer, 0);
         }
+        // Only send stop command for UART1 scanning (non-Kraken mode)
+        if (hw_config == 0) {  // Monster mode
         uart_send_command("stop");
+        }
     }
+    
+    // Update eye icon visibility (show if Kraken scanning active)
+    update_kraken_eye_icon();
     
     show_main_tiles();
 }
@@ -3639,6 +3713,36 @@ static void show_observer_page(void)
         lv_obj_add_state(observer_start_btn, LV_STATE_DISABLED);
         lv_obj_clear_state(observer_stop_btn, LV_STATE_DISABLED);
         lv_label_set_text_fmt(observer_status_label, "%d networks (monitoring...)", observer_network_count);
+    }
+    
+    // Mark observer page as visible
+    observer_page_visible = true;
+    
+    // Hide eye icon since we're on the observer page
+    update_kraken_eye_icon();
+    
+    // In Kraken mode, start background scanning on UART2 if not already running
+    // In Kraken mode, auto-start display and use UART2 background scanning
+    if (hw_config == 1 && uart2_initialized) {
+        if (!kraken_scanning_active) {
+            start_kraken_scanning();
+        }
+        
+        // Auto-start display in Kraken mode - no need to click Start button
+        if (kraken_scanning_active) {
+            observer_running = true;
+            observer_page_visible = true;
+            
+            // Disable Start, enable Stop
+            lv_obj_add_state(observer_start_btn, LV_STATE_DISABLED);
+            lv_obj_clear_state(observer_stop_btn, LV_STATE_DISABLED);
+            
+            lv_label_set_text(observer_status_label, "Kraken: UART2 continuous scanning...");
+            lv_obj_set_style_text_color(observer_status_label, COLOR_MATERIAL_CYAN, 0);
+            
+            // Hide eye icon since we're on the observer page
+            update_kraken_eye_icon();
+        }
     }
 }
 
@@ -4404,6 +4508,300 @@ static void reinit_uart2(void)
     init_uart2();
 }
 
+//==================================================================================
+// Kraken Background Scanning (UART2)
+//==================================================================================
+
+// Update eye icon visibility based on scanning state
+static void update_kraken_eye_icon(void)
+{
+    if (kraken_eye_icon == NULL) return;
+    
+    // Show eye icon when background scanning is active AND observer page is not visible
+    if (kraken_scanning_active && !observer_page_visible) {
+        lv_obj_clear_flag(kraken_eye_icon, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(kraken_eye_icon, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// Start Kraken background scanning on UART2
+static void start_kraken_scanning(void)
+{
+    if (hw_config != 1 || !uart2_initialized) {
+        ESP_LOGW(TAG, "Cannot start Kraken scanning: not in Kraken mode or UART2 not initialized");
+        return;
+    }
+    
+    if (kraken_scanning_active) {
+        ESP_LOGI(TAG, "[UART2] Kraken scanning already active");
+        return;
+    }
+    
+    kraken_scanning_active = true;
+    
+    // Create the background scanning task
+    if (kraken_scan_task_handle == NULL) {
+        xTaskCreate(kraken_scan_task, "kraken_scan", 8192, NULL, 5, &kraken_scan_task_handle);
+        ESP_LOGI(TAG, "[UART2] Kraken background scanning started");
+    }
+    
+    update_kraken_eye_icon();
+}
+
+// Stop Kraken background scanning
+static void stop_kraken_scanning(void)
+{
+    if (!kraken_scanning_active) {
+        return;
+    }
+    
+    kraken_scanning_active = false;
+    
+    // Notify task to stop
+    if (kraken_scan_task_handle != NULL) {
+        // Give task time to clean up
+        vTaskDelay(pdMS_TO_TICKS(200));
+        
+        // Only delete if still exists
+        if (kraken_scan_task_handle != NULL) {
+            vTaskDelete(kraken_scan_task_handle);
+            kraken_scan_task_handle = NULL;
+        }
+    }
+    
+    update_kraken_eye_icon();
+    ESP_LOGI(TAG, "[UART2] Kraken background scanning stopped");
+}
+
+// Kraken background scanning task - continuously scans networks on UART2
+static void kraken_scan_task(void *arg)
+{
+    ESP_LOGI(TAG, "[UART2] Kraken scan task running");
+    
+    // Check if PSRAM buffers are allocated
+    if (!observer_rx_buffer || !observer_line_buffer || !observer_networks) {
+        ESP_LOGE(TAG, "[UART2] PSRAM buffers not allocated!");
+        kraken_scan_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    char *rx_buffer = observer_rx_buffer;
+    char *line_buffer = observer_line_buffer;
+    int line_pos = 0;
+    
+    // ============================================================
+    // PHASE 1: Scan networks (ONCE at start)
+    // ============================================================
+    ESP_LOGI(TAG, "[UART2] Phase 1: Scanning networks...");
+    
+    // Update UI
+    if (observer_page_visible) {
+        bsp_display_lock(0);
+        if (observer_status_label) {
+            lv_label_set_text(observer_status_label, "Kraken: Scanning networks...");
+        }
+        bsp_display_unlock();
+    }
+    
+    // Clear previous results
+    observer_network_count = 0;
+    memset(observer_networks, 0, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
+    
+    // Flush UART2 buffer
+    uart_flush(UART2_NUM);
+    
+    // Send scan_networks command
+    uart2_send_command("scan_networks");
+    
+    // Wait for scan results
+    line_pos = 0;
+    bool scan_complete = false;
+    int scanned_count = 0;
+    
+    TickType_t start_time = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(UART_RX_TIMEOUT);
+    
+    while (!scan_complete && kraken_scanning_active && 
+           (xTaskGetTickCount() - start_time) < timeout_ticks) {
+        
+        int len = uart_read_bytes(UART2_NUM, (uint8_t*)rx_buffer, UART_BUF_SIZE - 1, pdMS_TO_TICKS(100));
+        
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            
+            for (int i = 0; i < len; i++) {
+                char c = rx_buffer[i];
+                
+                if (c == '\n' || c == '\r') {
+                    if (line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
+                        
+                        ESP_LOGI(TAG, "[UART2] SCAN: '%s'", line_buffer);
+                        
+                        // Check for scan completion marker
+                        if (strstr(line_buffer, "Scan results printed") != NULL) {
+                            scan_complete = true;
+                            ESP_LOGI(TAG, "[UART2] Scan complete marker found");
+                            break;
+                        }
+                        
+                        // Parse network line from scan (starts with ")
+                        if (line_buffer[0] == '"' && scanned_count < MAX_OBSERVER_NETWORKS) {
+                            observer_network_t net = {0};
+                            if (parse_scan_to_observer(line_buffer, &net)) {
+                                observer_networks[scanned_count] = net;
+                                scanned_count++;
+                                ESP_LOGI(TAG, "[UART2] Parsed network #%d: '%s' BSSID=%s CH%d", 
+                                         net.scan_index, net.ssid, net.bssid, net.channel);
+                            }
+                        }
+                        
+                        line_pos = 0;
+                    }
+                } else if (line_pos < OBSERVER_LINE_BUFFER_SIZE - 1) {
+                    line_buffer[line_pos++] = c;
+                }
+            }
+        }
+    }
+    
+    observer_network_count = scanned_count;
+    ESP_LOGI(TAG, "[UART2] Phase 1 complete: %d networks found", observer_network_count);
+    
+    // Update UI with scanned networks
+    if (observer_page_visible) {
+        bsp_display_lock(0);
+        if (observer_status_label) {
+            lv_label_set_text_fmt(observer_status_label, "Kraken: %d networks, starting sniffer...", observer_network_count);
+        }
+        update_observer_table();
+        bsp_display_unlock();
+    }
+    
+    if (!kraken_scanning_active) {
+        ESP_LOGI(TAG, "[UART2] Kraken stopped during scan phase");
+        kraken_scan_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    // ============================================================
+    // PHASE 2: Start sniffer (no rescan)
+    // ============================================================
+    ESP_LOGI(TAG, "[UART2] Phase 2: Starting sniffer...");
+    
+    vTaskDelay(pdMS_TO_TICKS(500));
+    uart_flush(UART2_NUM);
+    uart2_send_command("start_sniffer_noscan");
+    
+    vTaskDelay(pdMS_TO_TICKS(1000));  // Wait for sniffer to start
+    
+    if (observer_page_visible) {
+        bsp_display_lock(0);
+        if (observer_status_label) {
+            lv_label_set_text_fmt(observer_status_label, "Kraken: %d networks, observing...", observer_network_count);
+            lv_obj_set_style_text_color(observer_status_label, COLOR_MATERIAL_CYAN, 0);
+        }
+        bsp_display_unlock();
+    }
+    
+    // ============================================================
+    // PHASE 3: Polling loop - show_sniffer_results every 20s
+    // ============================================================
+    ESP_LOGI(TAG, "[UART2] Phase 3: Starting polling loop (every %d ms)", OBSERVER_POLL_INTERVAL_MS);
+    
+    while (kraken_scanning_active) {
+        // Flush and send show_sniffer_results
+        uart_flush(UART2_NUM);
+        uart2_send_command("show_sniffer_results");
+        
+        // Parse sniffer results
+        line_pos = 0;
+        int current_network_idx = -1;
+        
+        start_time = xTaskGetTickCount();
+        timeout_ticks = pdMS_TO_TICKS(5000);  // 5 second timeout for response
+        
+        while ((xTaskGetTickCount() - start_time) < timeout_ticks && kraken_scanning_active) {
+            int len = uart_read_bytes(UART2_NUM, (uint8_t*)rx_buffer, UART_BUF_SIZE - 1, pdMS_TO_TICKS(100));
+            
+            if (len > 0) {
+                rx_buffer[len] = '\0';
+                
+                for (int i = 0; i < len; i++) {
+                    char c = rx_buffer[i];
+                    
+                    if (c == '\n' || c == '\r') {
+                        if (line_pos > 0) {
+                            line_buffer[line_pos] = '\0';
+                            
+                            ESP_LOGD(TAG, "[UART2] SNIFFER: '%s'", line_buffer);
+                            
+                            // Check for network line (doesn't start with space)
+                            if (line_buffer[0] != ' ' && line_buffer[0] != '\t') {
+                                observer_network_t parsed_net = {0};
+                                if (parse_sniffer_network_line(line_buffer, &parsed_net)) {
+                                    // Find this network in our list by SSID
+                                    current_network_idx = -1;
+                                    for (int n = 0; n < observer_network_count; n++) {
+                                        if (strcmp(observer_networks[n].ssid, parsed_net.ssid) == 0) {
+                                            current_network_idx = n;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    current_network_idx = -1;
+                                }
+                            }
+                            // Check for client MAC line (starts with space)
+                            else if ((line_buffer[0] == ' ' || line_buffer[0] == '\t') && current_network_idx >= 0) {
+                                observer_network_t *net = &observer_networks[current_network_idx];
+                                char mac[18];
+                                if (parse_sniffer_client_line(line_buffer, mac, sizeof(mac))) {
+                                    if (add_client_mac(net, mac)) {
+                                        ESP_LOGI(TAG, "[UART2] New client: %s for '%s' (total: %d)", 
+                                                 mac, net->ssid, net->client_count);
+                                    }
+                                }
+                            }
+                            
+                            line_pos = 0;
+                        }
+                    } else if (line_pos < OBSERVER_LINE_BUFFER_SIZE - 1) {
+                        line_buffer[line_pos++] = c;
+                    }
+                }
+            }
+        }
+        
+        // Update UI if observer page is visible
+        if (observer_page_visible && observer_table != NULL) {
+            bsp_display_lock(0);
+            update_observer_table();
+            if (observer_status_label) {
+                int clients_total = 0;
+                for (int i = 0; i < observer_network_count; i++) {
+                    clients_total += observer_networks[i].client_count;
+                }
+                lv_label_set_text_fmt(observer_status_label, "Kraken: %d networks, %d clients", 
+                                      observer_network_count, clients_total);
+            }
+            bsp_display_unlock();
+        }
+        
+        // Wait before next poll (OBSERVER_POLL_INTERVAL_MS = 20 seconds)
+        for (int i = 0; i < (OBSERVER_POLL_INTERVAL_MS / 100) && kraken_scanning_active; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+    
+    ESP_LOGI(TAG, "[UART2] Kraken scan task exiting");
+    kraken_scan_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
 static void uart_pins_popup_close_cb(lv_event_t *e)
 {
     if (settings_popup_overlay) {
@@ -4470,8 +4868,12 @@ static void uart_pins_save_cb(lv_event_t *e)
                 init_uart2();
             }
         } else {
-            // Monster mode - deinit UART2 if it was initialized
+            // Monster mode - stop Kraken scanning and deinit UART2
+            if (kraken_scanning_active) {
+                stop_kraken_scanning();
+            }
             deinit_uart2();
+            update_kraken_eye_icon();  // Hide eye icon
         }
     }
     
@@ -5019,7 +5421,7 @@ void app_main(void)
     
     // Allocate large buffers in PSRAM for Network Observer
     ESP_LOGI(TAG, "Allocating observer buffers in PSRAM...");
-    observer_networks = heap_caps_calloc(MAX_NETWORKS, sizeof(observer_network_t), MALLOC_CAP_SPIRAM);
+    observer_networks = heap_caps_calloc(MAX_OBSERVER_NETWORKS, sizeof(observer_network_t), MALLOC_CAP_SPIRAM);
     observer_rx_buffer = heap_caps_malloc(UART_BUF_SIZE, MALLOC_CAP_SPIRAM);
     observer_line_buffer = heap_caps_malloc(OBSERVER_LINE_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
     
