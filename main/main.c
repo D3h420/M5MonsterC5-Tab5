@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "bsp/m5stack_tab5.h"
@@ -24,12 +25,15 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 
+// Audio codec for startup beep (commented out - causes linker issues)
+// #include "esp_codec_dev.h"
+
 static const char *TAG = "wifi_scanner";
 
 // UART Configuration for ESP32C5 communication
+// Note: TX/RX pins are configured dynamically via get_uart_pins() based on NVS settings
+// M5Bus (default): TX=38, RX=37 | Grove: TX=53, RX=54
 #define UART_NUM          UART_NUM_1
-#define UART_TX_PIN       GPIO_NUM_53//38
-#define UART_RX_PIN       GPIO_NUM_54//37
 #define UART_BAUD_RATE    115200
 #define UART_BUF_SIZE     4096
 #define UART_RX_TIMEOUT   30000  // 30 seconds timeout for scan
@@ -173,6 +177,15 @@ static lv_obj_t *scan_page = NULL;
 static lv_obj_t *observer_page = NULL;
 static lv_obj_t *esp_modem_page = NULL;
 static lv_obj_t *global_attacks_page = NULL;
+static lv_obj_t *settings_page = NULL;
+
+// Settings state - Dual UART configuration
+static uint8_t hw_config = 0;         // 0=Monster (single UART), 1=Kraken (dual UART)
+static uint8_t uart1_pins_mode = 1;   // 0=M5Bus(38/37), 1=Grove(53/54) - default Grove
+
+// UART2 for Kraken mode
+#define UART2_NUM UART_NUM_2
+static bool uart2_initialized = false;
 
 // ESP Modem global variables
 static wifi_ap_record_t *esp_modem_networks = NULL;  // Allocated in PSRAM
@@ -199,6 +212,12 @@ static lv_obj_t *network_list = NULL;
 static lv_obj_t *spinner = NULL;
 static lv_obj_t *scan_overlay = NULL;
 
+// Splash screen
+static lv_obj_t *splash_screen = NULL;
+static lv_obj_t *splash_label = NULL;
+static lv_timer_t *splash_timer = NULL;
+static int glitch_frame = 0;
+
 // LVGL UI elements - observer page
 static lv_obj_t *observer_start_btn = NULL;
 static lv_obj_t *observer_stop_btn = NULL;
@@ -216,6 +235,7 @@ static void show_main_tiles(void);
 static void show_scan_page(void);
 static void show_observer_page(void);
 static void show_esp_modem_page(void);
+static void show_settings_page(void);
 static void main_tile_event_cb(lv_event_t *e);
 static void back_btn_event_cb(lv_event_t *e);
 static void network_checkbox_event_cb(lv_event_t *e);
@@ -253,6 +273,18 @@ static void show_scan_overlay(void);
 static void hide_scan_overlay(void);
 static void show_evil_twin_loading_overlay(void);
 static void hide_evil_twin_loading_overlay(void);
+static void show_splash_screen(void);
+static void splash_timer_cb(lv_timer_t *timer);
+static void play_startup_beep(void);
+static void settings_tile_event_cb(lv_event_t *e);
+static void settings_back_btn_event_cb(lv_event_t *e);
+static void show_uart_pins_popup(void);
+static void show_scan_time_popup(void);
+static void get_uart1_pins(uint8_t mode, int *tx_pin, int *rx_pin);
+static void get_uart2_pins(uint8_t uart1_mode, int *tx_pin, int *rx_pin);
+static void init_uart2(void);
+static void deinit_uart2(void);
+static void load_hw_config_from_nvs(void);
 
 //==================================================================================
 // INA226 Power Monitor Driver
@@ -438,21 +470,39 @@ static void uart_init(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
     
+    // Get UART1 pins based on saved mode
+    int tx_pin, rx_pin;
+    get_uart1_pins(uart1_pins_mode, &tx_pin, &rx_pin);
+    
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, 
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM, tx_pin, rx_pin, 
                                   UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     
-    ESP_LOGI(TAG, "UART%d initialized: TX=%d, RX=%d, baud=%d", 
-             UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_BAUD_RATE);
+    ESP_LOGI(TAG, "[UART1] Initialized: TX=%d, RX=%d, baud=%d (%s) [%s mode]", 
+             tx_pin, rx_pin, UART_BAUD_RATE, 
+             uart1_pins_mode == 0 ? "M5Bus" : "Grove",
+             hw_config == 0 ? "Monster" : "Kraken");
 }
 
-// Send command over UART
+// Send command over UART1 (primary)
 static void uart_send_command(const char *cmd)
 {
     uart_write_bytes(UART_NUM, cmd, strlen(cmd));
     uart_write_bytes(UART_NUM, "\r\n", 2);
-    ESP_LOGI(TAG, "Sent command: %s", cmd);
+    ESP_LOGI(TAG, "[UART1] Sent command: %s", cmd);
+}
+
+// Send command over UART2 (secondary, Kraken mode only)
+static void uart2_send_command(const char *cmd)
+{
+    if (!uart2_initialized) {
+        ESP_LOGW(TAG, "[UART2] Not initialized (Kraken mode disabled)");
+        return;
+    }
+    uart_write_bytes(UART2_NUM, cmd, strlen(cmd));
+    uart_write_bytes(UART2_NUM, "\r\n", 2);
+    ESP_LOGI(TAG, "[UART2] Sent command: %s", cmd);
 }
 
 // Parse a single network line like: "1","SSID","","C4:2B:44:12:29:21","1","WPA2","-53","2.4GHz"
@@ -564,7 +614,7 @@ static void wifi_scan_task(void *arg)
                             if (parse_network_line(line_buffer, &net)) {
                                 networks[network_count] = net;
                                 network_count++;
-                                ESP_LOGI(TAG, "Parsed network %d: %s (%s) %s", 
+                                ESP_LOGI(TAG, "[UART1] Parsed network %d: %s (%s) %s", 
                                          net.index, net.ssid, net.bssid, net.band);
                             }
                         }
@@ -579,7 +629,7 @@ static void wifi_scan_task(void *arg)
     }
     
     if (!scan_complete) {
-        ESP_LOGW(TAG, "Scan timed out");
+        ESP_LOGW(TAG, "[UART1] Scan timed out");
     }
     
     ESP_LOGI(TAG, "Scan finished. Found %d networks", network_count);
@@ -656,10 +706,10 @@ static void wifi_scan_task(void *arg)
             lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_18, 0);
             lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xFFFFFF), 0);
             
-            // BSSID and Band
+            // BSSID, Band, Security and RSSI
             lv_obj_t *info_label = lv_label_create(text_cont);
-            lv_label_set_text_fmt(info_label, "%s  |  %s  |  %d dBm", 
-                                  net->bssid, net->band, net->rssi);
+            lv_label_set_text_fmt(info_label, "%s  |  %s  |  %s  |  %d dBm", 
+                                  net->bssid, net->band, net->security, net->rssi);
             lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
             lv_obj_set_style_text_color(info_label, lv_color_hex(0x888888), 0);
         }
@@ -752,6 +802,112 @@ static void hide_evil_twin_loading_overlay(void) {
     }
 }
 
+//==================================================================================
+// Startup Splash Screen with Glitch Animation
+//==================================================================================
+
+// Glitch colors for cyberpunk effect
+static const lv_color_t glitch_colors[] = {
+    {.red = 0x00, .green = 0xFF, .blue = 0xFF},  // Cyan
+    {.red = 0xFF, .green = 0x00, .blue = 0xFF},  // Magenta
+    {.red = 0xFF, .green = 0xFF, .blue = 0xFF},  // White
+    {.red = 0x00, .green = 0xFF, .blue = 0x00},  // Green (matrix style)
+    {.red = 0xFF, .green = 0xFF, .blue = 0x00},  // Yellow
+};
+#define GLITCH_COLOR_COUNT (sizeof(glitch_colors) / sizeof(glitch_colors[0]))
+
+// Splash timer callback - creates glitch effect
+static void splash_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    
+    glitch_frame++;
+    
+    if (glitch_frame < 15) {
+        // Glitch phase: rapid color and position changes
+        if (splash_label) {
+            // Random color from glitch palette
+            int color_idx = glitch_frame % GLITCH_COLOR_COUNT;
+            lv_obj_set_style_text_color(splash_label, glitch_colors[color_idx], 0);
+            
+            // Horizontal jitter effect
+            int jitter_x = (glitch_frame % 3 == 0) ? ((glitch_frame % 2) ? 8 : -8) : 0;
+            lv_obj_align(splash_label, LV_ALIGN_CENTER, jitter_x, 0);
+        }
+    } else if (glitch_frame < 25) {
+        // Stabilize phase: settle on cyan color
+        if (splash_label) {
+            lv_obj_set_style_text_color(splash_label, lv_color_hex(0x00FFFF), 0);
+            lv_obj_align(splash_label, LV_ALIGN_CENTER, 0, 0);
+        }
+    } else {
+        // End splash and show main tiles
+        if (splash_timer) {
+            lv_timer_del(splash_timer);
+            splash_timer = NULL;
+        }
+        
+        if (splash_screen) {
+            lv_obj_del(splash_screen);
+            splash_screen = NULL;
+            splash_label = NULL;
+        }
+        
+        // Now show main tiles
+        show_main_tiles();
+    }
+}
+
+// Play startup beep (audio disabled due to linker issues - just log)
+static void play_startup_beep(void)
+{
+    ESP_LOGI(TAG, "Startup beep (audio disabled)");
+    vTaskDelete(NULL);
+}
+
+// Show splash screen with C5Lab glitch animation
+static void show_splash_screen(void)
+{
+    ESP_LOGI(TAG, "Showing splash screen...");
+    
+    glitch_frame = 0;
+    
+    // Create full-screen black background
+    splash_screen = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(splash_screen);
+    lv_obj_set_size(splash_screen, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(splash_screen, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(splash_screen, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(splash_screen, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // C5Lab text with extra-large font
+    splash_label = lv_label_create(splash_screen);
+    lv_label_set_text(splash_label, "C5Lab");
+    lv_obj_set_style_text_font(splash_label, &lv_font_montserrat_44, 0);  // Largest currently available font (rebuild with fullclean for 48)
+    lv_obj_set_style_text_color(splash_label, lv_color_hex(0x00FFFF), 0);  // Start cyan
+    lv_obj_center(splash_label);
+    
+    // Add subtle scan line effect (optional decorative element)
+    lv_obj_t *subtitle = lv_label_create(splash_screen);
+    lv_label_set_text(subtitle, "[ INITIALIZING ]");
+    lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(subtitle, lv_color_hex(0x00FF00), 0);
+    lv_obj_align(subtitle, LV_ALIGN_CENTER, 0, 50);
+    
+    // Start glitch animation timer (50ms intervals = 20 FPS)
+    splash_timer = lv_timer_create(splash_timer_cb, 50, NULL);
+    
+    // Play startup beep in background task to not block UI
+    xTaskCreate(
+        (TaskFunction_t)play_startup_beep,
+        "beep",
+        4096,
+        NULL,
+        3,
+        NULL
+    );
+}
+
 // Scan button click handler
 static void scan_btn_click_cb(lv_event_t *e)
 {
@@ -836,7 +992,7 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
 static lv_obj_t *create_small_tile(lv_obj_t *parent, const char *icon, const char *text, lv_color_t bg_color, lv_event_cb_t callback, const char *user_data)
 {
     lv_obj_t *tile = lv_btn_create(parent);
-    lv_obj_set_size(tile, 85, 55);  // Smaller tile size for single row
+    lv_obj_set_size(tile, 108, 55);  // Wider tile for 4-tile layout
     lv_obj_set_style_bg_color(tile, bg_color, LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(tile, lv_color_lighten(bg_color, 50), LV_STATE_PRESSED);
     lv_obj_set_style_border_width(tile, 0, 0);
@@ -958,8 +1114,10 @@ static void main_tile_event_cb(lv_event_t *e)
         show_global_attacks_page();
     } else if (strcmp(tile_name, "Network Observer") == 0) {
         show_observer_page();
-    } else if (strcmp(tile_name, "Internal C6") == 0) {
+    } else if (strcmp(tile_name, "Internal C6 Test") == 0) {
         show_esp_modem_page();
+    } else if (strcmp(tile_name, "Settings") == 0) {
+        show_settings_page();
     } else {
         // Placeholder for other tiles - show a message
         ESP_LOGI(TAG, "Feature '%s' not implemented yet", tile_name);
@@ -1182,9 +1340,9 @@ static void show_scan_deauth_popup(void)
             lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_16, 0);
             lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xFFFFFF), 0);
             
-            // BSSID and Band
+            // BSSID, Band and Security
             lv_obj_t *info_label = lv_label_create(item);
-            lv_label_set_text_fmt(info_label, "BSSID: %s | %s", net->bssid, net->band);
+            lv_label_set_text_fmt(info_label, "BSSID: %s | %s | %s", net->bssid, net->band, net->security);
             lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
             lv_obj_set_style_text_color(info_label, lv_color_hex(0xAAAAAA), 0);
         }
@@ -1434,8 +1592,8 @@ static void show_handshaker_popup(void)
             const char *ssid_display = strlen(net->ssid) > 0 ? net->ssid : "(Hidden)";
             
             lv_obj_t *info_label = lv_label_create(network_scroll);
-            lv_label_set_text_fmt(info_label, "%s %s\nBSSID: %s | %s", 
-                                  LV_SYMBOL_WIFI, ssid_display, net->bssid, net->band);
+            lv_label_set_text_fmt(info_label, "%s %s\nBSSID: %s | %s | %s", 
+                                  LV_SYMBOL_WIFI, ssid_display, net->bssid, net->band, net->security);
             lv_obj_set_style_text_font(info_label, &lv_font_montserrat_14, 0);
             lv_obj_set_style_text_color(info_label, lv_color_hex(0xFFFFFF), 0);
         }
@@ -1596,7 +1754,7 @@ static void evil_twin_monitor_task(void *arg)
                 if (c == '\n' || c == '\r') {
                     if (line_pos > 0) {
                         line_buffer[line_pos] = '\0';
-                        ESP_LOGI(TAG, "Evil Twin UART: %s", line_buffer);
+                        ESP_LOGI(TAG, "[UART1] Evil Twin: %s", line_buffer);
                         
                         // Look for client connection: "Client connected - MAC: XX:XX:XX:XX:XX:XX"
                         char *client_connected = strstr(line_buffer, "Client connected - MAC:");
@@ -1651,7 +1809,7 @@ static void evil_twin_monitor_task(void *arg)
                             if (pwd_len > 127) pwd_len = 127;
                             strncpy(captured_pwd, pwd_start, pwd_len);
                             
-                            ESP_LOGI(TAG, "PASSWORD CAPTURED! SSID: %s, Password: %s", captured_ssid, captured_pwd);
+                            ESP_LOGI(TAG, "[UART1] PASSWORD CAPTURED! SSID: %s, Password: %s", captured_ssid, captured_pwd);
                             
                             // Update UI on main thread
                             if (evil_twin_status_label) {
@@ -1732,19 +1890,19 @@ static void evil_twin_start_cb(lv_event_t *e)
         }
     }
     
-    ESP_LOGI(TAG, "Evil Twin: sending %s", cmd);
+    ESP_LOGI(TAG, "[UART1] Evil Twin: sending %s", cmd);
     uart_send_command(cmd);
     vTaskDelay(pdMS_TO_TICKS(100));
     
     // Send select_html command (1-based index)
     char html_cmd[32];
     snprintf(html_cmd, sizeof(html_cmd), "select_html %d", selected_html_idx + 1);
-    ESP_LOGI(TAG, "Evil Twin: sending %s", html_cmd);
+    ESP_LOGI(TAG, "[UART1] Evil Twin: sending %s", html_cmd);
     uart_send_command(html_cmd);
     vTaskDelay(pdMS_TO_TICKS(100));
     
     // Send start_evil_twin
-    ESP_LOGI(TAG, "Evil Twin: sending start_evil_twin");
+    ESP_LOGI(TAG, "[UART1] Evil Twin: sending start_evil_twin");
     uart_send_command("start_evil_twin");
     
     // Build status text
@@ -2049,15 +2207,15 @@ static void show_main_tiles(void)
     lv_obj_set_flex_align(tiles_container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(tiles_container, LV_OBJ_FLAG_SCROLLABLE);
     
-    // Create 8 main tiles with Material colors
+    // Create main tiles with Material colors
     create_tile(tiles_container, LV_SYMBOL_WIFI, "WiFi Scan\n& Attack", COLOR_MATERIAL_BLUE, main_tile_event_cb, "WiFi Scan & Attack");
     create_tile(tiles_container, LV_SYMBOL_WARNING, "Global WiFi\nAttacks", COLOR_MATERIAL_RED, main_tile_event_cb, "Global WiFi Attacks");
-    create_tile(tiles_container, LV_SYMBOL_EYE_OPEN, "WiFi Sniff\n& Karma", COLOR_MATERIAL_PURPLE, main_tile_event_cb, "WiFi Sniff & Karma");
-    create_tile(tiles_container, LV_SYMBOL_SETTINGS, "WiFi\nMonitor", COLOR_MATERIAL_GREEN, main_tile_event_cb, "WiFi Monitor");
+    create_tile(tiles_container, LV_SYMBOL_EYE_OPEN, "WiFi\nMonitor", COLOR_MATERIAL_GREEN, main_tile_event_cb, "WiFi Monitor");
     create_tile(tiles_container, LV_SYMBOL_GPS, "Deauth\nMonitor", COLOR_MATERIAL_AMBER, main_tile_event_cb, "Deauth Monitor");
     create_tile(tiles_container, LV_SYMBOL_BLUETOOTH, "Bluetooth", COLOR_MATERIAL_CYAN, main_tile_event_cb, "Bluetooth");
     create_tile(tiles_container, LV_SYMBOL_LOOP, "Network\nObserver", COLOR_MATERIAL_TEAL, main_tile_event_cb, "Network Observer");
-    create_tile(tiles_container, LV_SYMBOL_CHARGE, "Internal\nC6", lv_color_make(255, 87, 34), main_tile_event_cb, "Internal C6");  // Deep Orange
+    create_tile(tiles_container, LV_SYMBOL_SETTINGS, "Settings", COLOR_MATERIAL_PURPLE, main_tile_event_cb, "Settings");
+    create_tile(tiles_container, LV_SYMBOL_CHARGE, "Internal\nC6 Test", lv_color_make(255, 87, 34), main_tile_event_cb, "Internal C6 Test");  // Deep Orange
 }
 
 // Show WiFi Scanner page with Back button
@@ -2193,12 +2351,11 @@ static void show_scan_page(void)
     lv_obj_set_flex_align(attack_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(attack_bar, LV_OBJ_FLAG_SCROLLABLE);
     
-    // Create attack tiles in the bottom bar
+    // Create attack tiles in the bottom bar (4 tiles)
     create_small_tile(attack_bar, LV_SYMBOL_CHARGE, "Deauth", COLOR_MATERIAL_RED, attack_tile_event_cb, "Deauth");
     create_small_tile(attack_bar, LV_SYMBOL_WARNING, "EvilTwin", COLOR_MATERIAL_ORANGE, attack_tile_event_cb, "Evil Twin");
     create_small_tile(attack_bar, LV_SYMBOL_POWER, "SAE", COLOR_MATERIAL_PINK, attack_tile_event_cb, "SAE Overflow");
     create_small_tile(attack_bar, LV_SYMBOL_DOWNLOAD, "Handshake", COLOR_MATERIAL_AMBER, attack_tile_event_cb, "Handshaker");
-    create_small_tile(attack_bar, LV_SYMBOL_EYE_OPEN, "Sniffer", COLOR_MATERIAL_PURPLE, attack_tile_event_cb, "Sniffer");
     
     // Auto-start scan when entering the page
     lv_obj_send_event(scan_btn, LV_EVENT_CLICKED, NULL);
@@ -2617,7 +2774,7 @@ static void update_observer_table(void)
         lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_18, 0);
         lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xFFFFFF), 0);
         
-        // Second row: BSSID | Band | RSSI
+        // Second row: BSSID | Band | RSSI (observer_network_t doesn't have security)
         lv_obj_t *info_label = lv_label_create(net_row);
         lv_label_set_text_fmt(info_label, "%s  |  %s  |  %d dBm", 
                               net->bssid, net->band, net->rssi);
@@ -4072,6 +4229,782 @@ static void show_global_attacks_page(void)
     create_tile(tiles, LV_SYMBOL_GPS, "Wardrive", COLOR_MATERIAL_TEAL, global_attack_tile_event_cb, "Wardrive");
 }
 
+//==================================================================================
+// Settings Page
+//==================================================================================
+
+// Settings popup variables
+static lv_obj_t *settings_popup_overlay = NULL;
+static lv_obj_t *settings_popup_obj = NULL;
+static lv_obj_t *hw_config_dropdown = NULL;
+static lv_obj_t *uart_radio_m5bus = NULL;
+static lv_obj_t *uart_radio_grove = NULL;
+static lv_obj_t *uart2_info_label = NULL;
+
+// NVS keys
+#define NVS_NAMESPACE "settings"
+#define NVS_KEY_HW_CONFIG   "hw_config"
+#define NVS_KEY_UART1_PINS  "uart1_pins"
+
+// Load UART mode from NVS (called on startup)
+// Load hardware configuration from NVS (called on startup)
+static void load_hw_config_from_nvs(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+    if (err == ESP_OK) {
+        uint8_t config = 0;
+        uint8_t pins = 1;  // Default Grove
+        
+        // Load hw_config (Monster/Kraken)
+        err = nvs_get_u8(nvs, NVS_KEY_HW_CONFIG, &config);
+        if (err == ESP_OK) {
+            hw_config = config;
+            ESP_LOGI(TAG, "Loaded hw_config from NVS: %s", config == 0 ? "Monster" : "Kraken");
+        } else {
+            ESP_LOGI(TAG, "No hw_config in NVS, using default: Monster");
+        }
+        
+        // Load uart1_pins (M5Bus/Grove)
+        err = nvs_get_u8(nvs, NVS_KEY_UART1_PINS, &pins);
+        if (err == ESP_OK) {
+            uart1_pins_mode = pins;
+            ESP_LOGI(TAG, "Loaded UART1 pins from NVS: %s", pins == 0 ? "M5Bus" : "Grove");
+        } else {
+            ESP_LOGI(TAG, "No UART1 pins in NVS, using default: Grove (TX=53, RX=54)");
+        }
+        
+        nvs_close(nvs);
+    } else {
+        ESP_LOGI(TAG, "NVS not available, using defaults: Monster mode, UART1=Grove");
+    }
+}
+
+// Save hardware configuration to NVS
+static void save_hw_config_to_nvs(uint8_t config, uint8_t pins)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_HW_CONFIG, config);
+        nvs_set_u8(nvs, NVS_KEY_UART1_PINS, pins);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+        ESP_LOGI(TAG, "Saved to NVS: hw_config=%s, UART1=%s", 
+                 config == 0 ? "Monster" : "Kraken",
+                 pins == 0 ? "M5Bus" : "Grove");
+    } else {
+        ESP_LOGE(TAG, "Failed to open NVS for writing: %s", esp_err_to_name(err));
+    }
+}
+
+// Get UART TX/RX pins based on mode
+// Get UART1 pins based on mode
+static void get_uart1_pins(uint8_t mode, int *tx_pin, int *rx_pin)
+{
+    if (mode == 0) {
+        // M5Bus
+        *tx_pin = 38;
+        *rx_pin = 37;
+    } else {
+        // Grove
+        *tx_pin = 53;
+        *rx_pin = 54;
+    }
+}
+
+// Get UART2 pins (opposite of UART1)
+static void get_uart2_pins(uint8_t uart1_mode, int *tx_pin, int *rx_pin)
+{
+    if (uart1_mode == 0) {
+        // UART1 is M5Bus, so UART2 is Grove
+        *tx_pin = 53;
+        *rx_pin = 54;
+    } else {
+        // UART1 is Grove, so UART2 is M5Bus
+        *tx_pin = 38;
+        *rx_pin = 37;
+    }
+}
+
+// Initialize UART2 for Kraken mode
+static void init_uart2(void)
+{
+    if (uart2_initialized) {
+        return;
+    }
+    
+    int tx_pin, rx_pin;
+    get_uart2_pins(uart1_pins_mode, &tx_pin, &rx_pin);
+    
+    uart_config_t uart_config = {
+        .baud_rate = UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    
+    ESP_ERROR_CHECK(uart_driver_install(UART2_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(UART2_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART2_NUM, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    
+    uart2_initialized = true;
+    ESP_LOGI(TAG, "[UART2] Initialized for Kraken mode: TX=%d, RX=%d", tx_pin, rx_pin);
+}
+
+// Deinitialize UART2 when switching to Monster mode
+static void deinit_uart2(void)
+{
+    if (!uart2_initialized) {
+        return;
+    }
+    
+    uart_driver_delete(UART2_NUM);
+    uart2_initialized = false;
+    ESP_LOGI(TAG, "[UART2] Deinitialized (Monster mode)");
+}
+
+// Reinitialize UART with new pins
+// Reinitialize UART1 with new pins
+static void reinit_uart1_with_mode(uint8_t mode)
+{
+    int tx_pin, rx_pin;
+    get_uart1_pins(mode, &tx_pin, &rx_pin);
+    
+    // Delete existing UART driver
+    uart_driver_delete(UART_NUM);
+    
+    // Reconfigure with new pins
+    uart_config_t uart_config = {
+        .baud_rate = UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    
+    uart_driver_install(UART_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0);
+    uart_param_config(UART_NUM, &uart_config);
+    uart_set_pin(UART_NUM, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    
+    ESP_LOGI(TAG, "[UART1] Reinitialized: TX=%d, RX=%d (%s)", tx_pin, rx_pin, 
+             mode == 0 ? "M5Bus" : "Grove");
+}
+
+// Reinitialize UART2 with new pins (for Kraken mode)
+static void reinit_uart2(void)
+{
+    if (uart2_initialized) {
+        uart_driver_delete(UART2_NUM);
+        uart2_initialized = false;
+    }
+    init_uart2();
+}
+
+static void uart_pins_popup_close_cb(lv_event_t *e)
+{
+    if (settings_popup_overlay) {
+        lv_obj_del(settings_popup_overlay);
+        settings_popup_overlay = NULL;
+        settings_popup_obj = NULL;
+        hw_config_dropdown = NULL;
+        uart_radio_m5bus = NULL;
+        uart_radio_grove = NULL;
+        uart2_info_label = NULL;
+    }
+}
+
+// Update the UART2 info label based on current selections
+static void update_uart2_info_label(void)
+{
+    if (!uart2_info_label || !hw_config_dropdown) return;
+    
+    uint16_t selected = lv_dropdown_get_selected(hw_config_dropdown);
+    
+    if (selected == 0) {
+        // Monster mode - hide UART2 info
+        lv_label_set_text(uart2_info_label, "");
+    } else {
+        // Kraken mode - show UART2 on opposite pins
+        bool grove_selected = uart_radio_grove && lv_obj_has_state(uart_radio_grove, LV_STATE_CHECKED);
+        if (grove_selected) {
+            lv_label_set_text(uart2_info_label, "Kraken enables UART2 on: M5Bus (TX:38, RX:37)");
+        } else {
+            lv_label_set_text(uart2_info_label, "Kraken enables UART2 on: Grove (TX:53, RX:54)");
+        }
+    }
+}
+
+static void uart_pins_save_cb(lv_event_t *e)
+{
+    // Get hardware config
+    uint8_t new_hw_config = 0;
+    if (hw_config_dropdown) {
+        new_hw_config = lv_dropdown_get_selected(hw_config_dropdown);
+    }
+    
+    // Get UART1 pins mode
+    uint8_t new_pins_mode = 0;
+    if (uart_radio_grove && lv_obj_has_state(uart_radio_grove, LV_STATE_CHECKED)) {
+        new_pins_mode = 1;
+    }
+    
+    // Check if anything changed
+    bool config_changed = (new_hw_config != hw_config) || (new_pins_mode != uart1_pins_mode);
+    
+    if (config_changed) {
+        hw_config = new_hw_config;
+        uart1_pins_mode = new_pins_mode;
+        save_hw_config_to_nvs(new_hw_config, new_pins_mode);
+        reinit_uart1_with_mode(new_pins_mode);
+        
+        // Handle UART2 based on mode
+        if (hw_config == 1) {
+            // Kraken mode - init/reinit UART2
+            if (uart2_initialized) {
+                reinit_uart2();
+            } else {
+                init_uart2();
+            }
+        } else {
+            // Monster mode - deinit UART2 if it was initialized
+            deinit_uart2();
+        }
+    }
+    
+    uart_pins_popup_close_cb(e);
+}
+
+static void hw_config_dropdown_event_cb(lv_event_t *e)
+{
+    update_uart2_info_label();
+}
+
+static void uart_radio_event_cb(lv_event_t *e)
+{
+    lv_obj_t *target = lv_event_get_target(e);
+    
+    // Uncheck the other radio button
+    if (target == uart_radio_m5bus) {
+        lv_obj_add_state(uart_radio_m5bus, LV_STATE_CHECKED);
+        lv_obj_clear_state(uart_radio_grove, LV_STATE_CHECKED);
+    } else if (target == uart_radio_grove) {
+        lv_obj_add_state(uart_radio_grove, LV_STATE_CHECKED);
+        lv_obj_clear_state(uart_radio_m5bus, LV_STATE_CHECKED);
+    }
+    
+    // Update UART2 info when pins change
+    update_uart2_info_label();
+}
+
+// Scan Time popup variables
+static lv_obj_t *scan_time_popup_overlay = NULL;
+static lv_obj_t *scan_time_popup_obj = NULL;
+static lv_obj_t *scan_time_min_spinbox = NULL;
+static lv_obj_t *scan_time_max_spinbox = NULL;
+static lv_obj_t *scan_time_error_label = NULL;
+
+static void scan_time_popup_close_cb(lv_event_t *e)
+{
+    if (scan_time_popup_overlay) {
+        lv_obj_del(scan_time_popup_overlay);
+        scan_time_popup_overlay = NULL;
+        scan_time_popup_obj = NULL;
+        scan_time_min_spinbox = NULL;
+        scan_time_max_spinbox = NULL;
+        scan_time_error_label = NULL;
+    }
+}
+
+static void scan_time_save_cb(lv_event_t *e)
+{
+    if (!scan_time_min_spinbox || !scan_time_max_spinbox) return;
+    
+    int min_val = lv_spinbox_get_value(scan_time_min_spinbox);
+    int max_val = lv_spinbox_get_value(scan_time_max_spinbox);
+    
+    // Validation
+    if (min_val >= max_val) {
+        if (scan_time_error_label) {
+            lv_label_set_text(scan_time_error_label, "Error: min must be less than max");
+            lv_obj_set_style_text_color(scan_time_error_label, COLOR_MATERIAL_RED, 0);
+        }
+        return;
+    }
+    
+    // Send UART commands
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "channel_time set min %d", min_val);
+    uart_send_command(cmd);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    snprintf(cmd, sizeof(cmd), "channel_time set max %d", max_val);
+    uart_send_command(cmd);
+    
+    ESP_LOGI(TAG, "Scan time set: min=%d, max=%d", min_val, max_val);
+    
+    scan_time_popup_close_cb(e);
+}
+
+static void spinbox_increment_event_cb(lv_event_t *e)
+{
+    lv_obj_t *spinbox = (lv_obj_t *)lv_event_get_user_data(e);
+    lv_spinbox_increment(spinbox);
+}
+
+static void spinbox_decrement_event_cb(lv_event_t *e)
+{
+    lv_obj_t *spinbox = (lv_obj_t *)lv_event_get_user_data(e);
+    lv_spinbox_decrement(spinbox);
+}
+
+static void show_scan_time_popup(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Create modal overlay
+    scan_time_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(scan_time_popup_overlay);
+    lv_obj_set_size(scan_time_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(scan_time_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(scan_time_popup_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(scan_time_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(scan_time_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Create popup
+    scan_time_popup_obj = lv_obj_create(scan_time_popup_overlay);
+    lv_obj_set_size(scan_time_popup_obj, 450, 380);
+    lv_obj_center(scan_time_popup_obj);
+    lv_obj_set_style_bg_color(scan_time_popup_obj, lv_color_hex(0x2D2D2D), 0);
+    lv_obj_set_style_border_color(scan_time_popup_obj, COLOR_MATERIAL_GREEN, 0);
+    lv_obj_set_style_border_width(scan_time_popup_obj, 2, 0);
+    lv_obj_set_style_radius(scan_time_popup_obj, 12, 0);
+    lv_obj_set_style_pad_all(scan_time_popup_obj, 20, 0);
+    lv_obj_set_flex_flow(scan_time_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(scan_time_popup_obj, 15, 0);
+    lv_obj_clear_flag(scan_time_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(scan_time_popup_obj);
+    lv_label_set_text(title, "Channel Scan Time (ms)");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+    
+    // Min scan time row
+    lv_obj_t *min_row = lv_obj_create(scan_time_popup_obj);
+    lv_obj_set_size(min_row, lv_pct(100), 60);
+    lv_obj_set_style_bg_opa(min_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(min_row, 0, 0);
+    lv_obj_set_flex_flow(min_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(min_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(min_row, LV_OBJ_FLAG_SCROLLABLE);
+    
+    lv_obj_t *min_label = lv_label_create(min_row);
+    lv_label_set_text(min_label, "Min time:");
+    lv_obj_set_style_text_font(min_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(min_label, lv_color_hex(0xFFFFFF), 0);
+    
+    // Spinbox container for min
+    lv_obj_t *min_spin_cont = lv_obj_create(min_row);
+    lv_obj_set_size(min_spin_cont, 180, 50);
+    lv_obj_set_style_bg_opa(min_spin_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(min_spin_cont, 0, 0);
+    lv_obj_set_flex_flow(min_spin_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(min_spin_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(min_spin_cont, 5, 0);
+    lv_obj_clear_flag(min_spin_cont, LV_OBJ_FLAG_SCROLLABLE);
+    
+    lv_obj_t *min_dec_btn = lv_btn_create(min_spin_cont);
+    lv_obj_set_size(min_dec_btn, 40, 40);
+    lv_obj_set_style_bg_color(min_dec_btn, lv_color_hex(0x555555), 0);
+    lv_obj_t *min_dec_label = lv_label_create(min_dec_btn);
+    lv_label_set_text(min_dec_label, LV_SYMBOL_MINUS);
+    lv_obj_center(min_dec_label);
+    
+    scan_time_min_spinbox = lv_spinbox_create(min_spin_cont);
+    lv_spinbox_set_range(scan_time_min_spinbox, 100, 1500);
+    lv_spinbox_set_digit_format(scan_time_min_spinbox, 4, 0);
+    lv_spinbox_set_value(scan_time_min_spinbox, 200);  // Default value
+    lv_spinbox_set_step(scan_time_min_spinbox, 50);
+    lv_obj_set_width(scan_time_min_spinbox, 80);
+    lv_obj_set_style_text_font(scan_time_min_spinbox, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_bg_color(scan_time_min_spinbox, lv_color_hex(0x3D3D3D), 0);
+    lv_obj_set_style_text_color(scan_time_min_spinbox, lv_color_hex(0xFFFFFF), 0);
+    
+    lv_obj_t *min_inc_btn = lv_btn_create(min_spin_cont);
+    lv_obj_set_size(min_inc_btn, 40, 40);
+    lv_obj_set_style_bg_color(min_inc_btn, lv_color_hex(0x555555), 0);
+    lv_obj_t *min_inc_label = lv_label_create(min_inc_btn);
+    lv_label_set_text(min_inc_label, LV_SYMBOL_PLUS);
+    lv_obj_center(min_inc_label);
+    
+    lv_obj_add_event_cb(min_dec_btn, spinbox_decrement_event_cb, LV_EVENT_CLICKED, scan_time_min_spinbox);
+    lv_obj_add_event_cb(min_inc_btn, spinbox_increment_event_cb, LV_EVENT_CLICKED, scan_time_min_spinbox);
+    
+    // Max scan time row
+    lv_obj_t *max_row = lv_obj_create(scan_time_popup_obj);
+    lv_obj_set_size(max_row, lv_pct(100), 60);
+    lv_obj_set_style_bg_opa(max_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(max_row, 0, 0);
+    lv_obj_set_flex_flow(max_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(max_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(max_row, LV_OBJ_FLAG_SCROLLABLE);
+    
+    lv_obj_t *max_label = lv_label_create(max_row);
+    lv_label_set_text(max_label, "Max time:");
+    lv_obj_set_style_text_font(max_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(max_label, lv_color_hex(0xFFFFFF), 0);
+    
+    // Spinbox container for max
+    lv_obj_t *max_spin_cont = lv_obj_create(max_row);
+    lv_obj_set_size(max_spin_cont, 180, 50);
+    lv_obj_set_style_bg_opa(max_spin_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(max_spin_cont, 0, 0);
+    lv_obj_set_flex_flow(max_spin_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(max_spin_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(max_spin_cont, 5, 0);
+    lv_obj_clear_flag(max_spin_cont, LV_OBJ_FLAG_SCROLLABLE);
+    
+    lv_obj_t *max_dec_btn = lv_btn_create(max_spin_cont);
+    lv_obj_set_size(max_dec_btn, 40, 40);
+    lv_obj_set_style_bg_color(max_dec_btn, lv_color_hex(0x555555), 0);
+    lv_obj_t *max_dec_label = lv_label_create(max_dec_btn);
+    lv_label_set_text(max_dec_label, LV_SYMBOL_MINUS);
+    lv_obj_center(max_dec_label);
+    
+    scan_time_max_spinbox = lv_spinbox_create(max_spin_cont);
+    lv_spinbox_set_range(scan_time_max_spinbox, 100, 1500);
+    lv_spinbox_set_digit_format(scan_time_max_spinbox, 4, 0);
+    lv_spinbox_set_value(scan_time_max_spinbox, 500);  // Default value
+    lv_spinbox_set_step(scan_time_max_spinbox, 50);
+    lv_obj_set_width(scan_time_max_spinbox, 80);
+    lv_obj_set_style_text_font(scan_time_max_spinbox, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_bg_color(scan_time_max_spinbox, lv_color_hex(0x3D3D3D), 0);
+    lv_obj_set_style_text_color(scan_time_max_spinbox, lv_color_hex(0xFFFFFF), 0);
+    
+    lv_obj_t *max_inc_btn = lv_btn_create(max_spin_cont);
+    lv_obj_set_size(max_inc_btn, 40, 40);
+    lv_obj_set_style_bg_color(max_inc_btn, lv_color_hex(0x555555), 0);
+    lv_obj_t *max_inc_label = lv_label_create(max_inc_btn);
+    lv_label_set_text(max_inc_label, LV_SYMBOL_PLUS);
+    lv_obj_center(max_inc_label);
+    
+    lv_obj_add_event_cb(max_dec_btn, spinbox_decrement_event_cb, LV_EVENT_CLICKED, scan_time_max_spinbox);
+    lv_obj_add_event_cb(max_inc_btn, spinbox_increment_event_cb, LV_EVENT_CLICKED, scan_time_max_spinbox);
+    
+    // Error label
+    scan_time_error_label = lv_label_create(scan_time_popup_obj);
+    lv_label_set_text(scan_time_error_label, "");
+    lv_obj_set_style_text_font(scan_time_error_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(scan_time_error_label, COLOR_MATERIAL_RED, 0);
+    
+    // Button row
+    lv_obj_t *btn_row = lv_obj_create(scan_time_popup_obj);
+    lv_obj_set_size(btn_row, lv_pct(100), 50);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btn_row, 20, 0);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Cancel button
+    lv_obj_t *cancel_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(cancel_btn, 100, 40);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x555555), 0);
+    lv_obj_add_event_cb(cancel_btn, scan_time_popup_close_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *cancel_label = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_label, "Cancel");
+    lv_obj_center(cancel_label);
+    
+    // Save button
+    lv_obj_t *save_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(save_btn, 100, 40);
+    lv_obj_set_style_bg_color(save_btn, COLOR_MATERIAL_GREEN, 0);
+    lv_obj_add_event_cb(save_btn, scan_time_save_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *save_label = lv_label_create(save_btn);
+    lv_label_set_text(save_label, "Save");
+    lv_obj_center(save_label);
+}
+
+static void show_uart_pins_popup(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Create modal overlay
+    settings_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(settings_popup_overlay);
+    lv_obj_set_size(settings_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(settings_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(settings_popup_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(settings_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(settings_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Create popup - taller to fit new elements
+    settings_popup_obj = lv_obj_create(settings_popup_overlay);
+    lv_obj_set_size(settings_popup_obj, 450, 400);
+    lv_obj_center(settings_popup_obj);
+    lv_obj_set_style_bg_color(settings_popup_obj, lv_color_hex(0x2D2D2D), 0);
+    lv_obj_set_style_border_color(settings_popup_obj, COLOR_MATERIAL_BLUE, 0);
+    lv_obj_set_style_border_width(settings_popup_obj, 2, 0);
+    lv_obj_set_style_radius(settings_popup_obj, 12, 0);
+    lv_obj_set_style_pad_all(settings_popup_obj, 20, 0);
+    lv_obj_set_flex_flow(settings_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(settings_popup_obj, 12, 0);
+    lv_obj_clear_flag(settings_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(settings_popup_obj);
+    lv_label_set_text(title, "UART Pin Configuration");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+    
+    // Hardware Configuration dropdown row
+    lv_obj_t *hw_row = lv_obj_create(settings_popup_obj);
+    lv_obj_set_size(hw_row, lv_pct(100), 50);
+    lv_obj_set_style_bg_opa(hw_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hw_row, 0, 0);
+    lv_obj_set_flex_flow(hw_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hw_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(hw_row, LV_OBJ_FLAG_SCROLLABLE);
+    
+    lv_obj_t *hw_label = lv_label_create(hw_row);
+    lv_label_set_text(hw_label, "Hardware Config:");
+    lv_obj_set_style_text_font(hw_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(hw_label, lv_color_hex(0xFFFFFF), 0);
+    
+    hw_config_dropdown = lv_dropdown_create(hw_row);
+    lv_dropdown_set_options(hw_config_dropdown, "Monster\nKraken");
+    lv_dropdown_set_selected(hw_config_dropdown, hw_config);
+    lv_obj_set_width(hw_config_dropdown, 150);
+    lv_obj_set_style_bg_color(hw_config_dropdown, lv_color_hex(0x3D3D3D), 0);
+    lv_obj_set_style_text_color(hw_config_dropdown, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_add_event_cb(hw_config_dropdown, hw_config_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    
+    // Style dropdown list
+    lv_obj_t *dropdown_list = lv_dropdown_get_list(hw_config_dropdown);
+    if (dropdown_list) {
+        lv_obj_set_style_bg_color(dropdown_list, lv_color_hex(0x3D3D3D), 0);
+        lv_obj_set_style_text_color(dropdown_list, lv_color_hex(0xFFFFFF), 0);
+    }
+    
+    // UART1 Pins label
+    lv_obj_t *uart1_title = lv_label_create(settings_popup_obj);
+    lv_label_set_text(uart1_title, "UART1 Pins:");
+    lv_obj_set_style_text_font(uart1_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(uart1_title, lv_color_hex(0xAAAAAA), 0);
+    
+    // M5Bus radio option
+    lv_obj_t *m5bus_row = lv_obj_create(settings_popup_obj);
+    lv_obj_set_size(m5bus_row, lv_pct(100), 40);
+    lv_obj_set_style_bg_opa(m5bus_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(m5bus_row, 0, 0);
+    lv_obj_set_flex_flow(m5bus_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(m5bus_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(m5bus_row, 15, 0);
+    lv_obj_clear_flag(m5bus_row, LV_OBJ_FLAG_SCROLLABLE);
+    
+    uart_radio_m5bus = lv_checkbox_create(m5bus_row);
+    lv_checkbox_set_text(uart_radio_m5bus, "");
+    lv_obj_set_style_bg_color(uart_radio_m5bus, lv_color_hex(0x555555), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(uart_radio_m5bus, COLOR_MATERIAL_BLUE, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_add_event_cb(uart_radio_m5bus, uart_radio_event_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *m5bus_label = lv_label_create(m5bus_row);
+    lv_label_set_text(m5bus_label, "M5Bus (TX:38, RX:37)");
+    lv_obj_set_style_text_font(m5bus_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(m5bus_label, lv_color_hex(0xFFFFFF), 0);
+    
+    // Grove radio option
+    lv_obj_t *grove_row = lv_obj_create(settings_popup_obj);
+    lv_obj_set_size(grove_row, lv_pct(100), 40);
+    lv_obj_set_style_bg_opa(grove_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(grove_row, 0, 0);
+    lv_obj_set_flex_flow(grove_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(grove_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(grove_row, 15, 0);
+    lv_obj_clear_flag(grove_row, LV_OBJ_FLAG_SCROLLABLE);
+    
+    uart_radio_grove = lv_checkbox_create(grove_row);
+    lv_checkbox_set_text(uart_radio_grove, "");
+    lv_obj_set_style_bg_color(uart_radio_grove, lv_color_hex(0x555555), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(uart_radio_grove, COLOR_MATERIAL_BLUE, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_add_event_cb(uart_radio_grove, uart_radio_event_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *grove_label = lv_label_create(grove_row);
+    lv_label_set_text(grove_label, "Grove (TX:53, RX:54)");
+    lv_obj_set_style_text_font(grove_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(grove_label, lv_color_hex(0xFFFFFF), 0);
+    
+    // Set initial state based on uart1_pins_mode
+    if (uart1_pins_mode == 0) {
+        lv_obj_add_state(uart_radio_m5bus, LV_STATE_CHECKED);
+    } else {
+        lv_obj_add_state(uart_radio_grove, LV_STATE_CHECKED);
+    }
+    
+    // UART2 info label (for Kraken mode)
+    uart2_info_label = lv_label_create(settings_popup_obj);
+    lv_obj_set_style_text_font(uart2_info_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(uart2_info_label, COLOR_MATERIAL_CYAN, 0);
+    update_uart2_info_label();  // Set initial text
+    
+    // Button row
+    lv_obj_t *btn_row = lv_obj_create(settings_popup_obj);
+    lv_obj_set_size(btn_row, lv_pct(100), 50);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btn_row, 20, 0);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Cancel button
+    lv_obj_t *cancel_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(cancel_btn, 100, 40);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x555555), 0);
+    lv_obj_add_event_cb(cancel_btn, uart_pins_popup_close_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *cancel_label = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_label, "Cancel");
+    lv_obj_center(cancel_label);
+    
+    // Save button
+    lv_obj_t *save_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(save_btn, 100, 40);
+    lv_obj_set_style_bg_color(save_btn, COLOR_MATERIAL_GREEN, 0);
+    lv_obj_add_event_cb(save_btn, uart_pins_save_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *save_label = lv_label_create(save_btn);
+    lv_label_set_text(save_label, "Save");
+    lv_obj_center(save_label);
+}
+
+static void settings_back_btn_event_cb(lv_event_t *e)
+{
+    ESP_LOGI(TAG, "Settings back button clicked");
+    show_main_tiles();
+}
+
+static void settings_tile_event_cb(lv_event_t *e)
+{
+    const char *tile_name = (const char *)lv_event_get_user_data(e);
+    ESP_LOGI(TAG, "Settings tile clicked: %s", tile_name);
+    
+    if (strcmp(tile_name, "UART Pins") == 0) {
+        show_uart_pins_popup();
+    } else if (strcmp(tile_name, "Scan Time") == 0) {
+        show_scan_time_popup();
+    }
+}
+
+// Show Settings page with UART Pins and Scan Time tiles
+static void show_settings_page(void)
+{
+    // Delete tiles container if present
+    if (tiles_container) {
+        lv_obj_del(tiles_container);
+        tiles_container = NULL;
+    }
+    
+    // Delete scan page if present  
+    if (scan_page) {
+        lv_obj_del(scan_page);
+        scan_page = NULL;
+    }
+    
+    // Delete observer page if present
+    if (observer_page) {
+        lv_obj_del(observer_page);
+        observer_page = NULL;
+    }
+    
+    // Delete ESP modem page if present
+    if (esp_modem_page) {
+        lv_obj_del(esp_modem_page);
+        esp_modem_page = NULL;
+    }
+    
+    // Delete global attacks page if present
+    if (global_attacks_page) {
+        lv_obj_del(global_attacks_page);
+        global_attacks_page = NULL;
+    }
+    
+    // Delete existing settings page if present
+    if (settings_page) {
+        lv_obj_del(settings_page);
+        settings_page = NULL;
+    }
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Set dark background
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x121212), 0);
+    
+    // Create/update status bar
+    create_status_bar();
+    
+    // Create settings page container below status bar
+    settings_page = lv_obj_create(scr);
+    lv_coord_t settings_scr_height = lv_disp_get_ver_res(NULL);
+    lv_obj_set_size(settings_page, lv_pct(100), settings_scr_height - 40);
+    lv_obj_align(settings_page, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_bg_color(settings_page, lv_color_hex(0x121212), 0);
+    lv_obj_set_style_border_width(settings_page, 0, 0);
+    lv_obj_set_style_pad_all(settings_page, 16, 0);
+    lv_obj_set_flex_flow(settings_page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(settings_page, 16, 0);
+    lv_obj_clear_flag(settings_page, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Header with back button and title
+    lv_obj_t *header = lv_obj_create(settings_page);
+    lv_obj_set_size(header, lv_pct(100), 50);
+    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Back button
+    lv_obj_t *back_btn = lv_btn_create(header);
+    lv_obj_set_size(back_btn, 80, 40);
+    lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(back_btn, COLOR_MATERIAL_PURPLE, 0);
+    lv_obj_add_event_cb(back_btn, settings_back_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *back_label = lv_label_create(back_btn);
+    lv_label_set_text(back_label, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(back_label);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+    
+    // Tiles container
+    lv_obj_t *tiles = lv_obj_create(settings_page);
+    lv_obj_set_size(tiles, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(tiles, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tiles, 0, 0);
+    lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(tiles, 20, 0);
+    lv_obj_set_style_pad_row(tiles, 20, 0);
+    lv_obj_clear_flag(tiles, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // UART Pins tile
+    create_tile(tiles, LV_SYMBOL_USB, "UART\nPins", COLOR_MATERIAL_BLUE, settings_tile_event_cb, "UART Pins");
+    
+    // Scan Time tile
+    create_tile(tiles, LV_SYMBOL_REFRESH, "Scan\nTime", COLOR_MATERIAL_GREEN, settings_tile_event_cb, "Scan Time");
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "M5Stack Tab5 WiFi Scanner");
@@ -4116,8 +5049,14 @@ void app_main(void)
     bsp_set_charge_en(true);
     bsp_set_charge_qc_en(true);
     
-    // Initialize UART for ESP32C5 communication
-    uart_init();
+    // Load hardware config from NVS and initialize UARTs
+    load_hw_config_from_nvs();
+    uart_init();  // Initialize UART1
+    
+    // If Kraken mode, also initialize UART2
+    if (hw_config == 1) {
+        init_uart2();
+    }
     
     // Initialize display
     lv_display_t *disp = bsp_display_start();
@@ -4129,9 +5068,9 @@ void app_main(void)
     // Set display brightness
     bsp_display_brightness_set(80);
     
-    // Create UI - show main tiles
+    // Show splash screen with animation (will transition to main tiles when done)
     bsp_display_lock(0);
-    show_main_tiles();
+    show_splash_screen();
     bsp_display_unlock();
     
     ESP_LOGI(TAG, "Application started. Ready to scan.");
