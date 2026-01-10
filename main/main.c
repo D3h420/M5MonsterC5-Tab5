@@ -237,6 +237,10 @@ static lv_obj_t *esp_modem_status_label = NULL;
 static lv_obj_t *esp_modem_network_list = NULL;
 static lv_obj_t *esp_modem_spinner = NULL;
 
+// LVGL UI elements - Blackout popup
+static lv_obj_t *blackout_popup_overlay = NULL;
+static lv_obj_t *blackout_popup_obj = NULL;
+
 // Forward declarations
 static void show_main_tiles(void);
 static void show_scan_page(void);
@@ -296,6 +300,11 @@ static void kraken_scan_task(void *arg);
 static void start_kraken_scanning(void);
 static void stop_kraken_scanning(void);
 static void update_kraken_eye_icon(void);
+static void show_blackout_confirm_popup(void);
+static void blackout_confirm_yes_cb(lv_event_t *e);
+static void blackout_confirm_no_cb(lv_event_t *e);
+static void show_blackout_active_popup(void);
+static void blackout_stop_cb(lv_event_t *e);
 
 //==================================================================================
 // INA226 Power Monitor Driver
@@ -2263,6 +2272,9 @@ static void show_scan_page(void)
     // Create/update status bar
     create_status_bar();
     
+    // Update eye icon visibility (Kraken background scanning)
+    update_kraken_eye_icon();
+    
     // Create scan page container below status bar
     scan_page = lv_obj_create(scr);
     lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
@@ -2458,9 +2470,9 @@ static void close_network_popup(void)
         uart2_send_command("start_sniffer_noscan");
     } else {
         // Monster mode - use UART1
-        uart_send_command("unselect_networks");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        uart_send_command("start_sniffer_noscan");
+    uart_send_command("unselect_networks");
+    vTaskDelay(pdMS_TO_TICKS(100));
+    uart_send_command("start_sniffer_noscan");
     }
     
     // Close popup UI
@@ -2519,9 +2531,9 @@ static void show_network_popup(int network_idx)
         // Monster mode - use UART1
         uart_send_command("stop");
         vTaskDelay(pdMS_TO_TICKS(200));
-        uart_send_command(cmd);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        uart_send_command("start_sniffer");
+    uart_send_command(cmd);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    uart_send_command("start_sniffer");
     }
     
     // Create popup overlay
@@ -2691,7 +2703,7 @@ static void popup_poll_task(void *arg)
     if (hw_config == 1) {
         uart2_send_command("show_sniffer_results");
     } else {
-        uart_send_command("show_sniffer_results");
+    uart_send_command("show_sniffer_results");
     }
     
     char *rx_buffer = observer_rx_buffer;
@@ -4089,6 +4101,9 @@ static void show_esp_modem_page(void)
     // Create/update status bar
     create_status_bar();
     
+    // Update eye icon visibility (Kraken background scanning)
+    update_kraken_eye_icon();
+    
     // Create ESP Modem page container below status bar
     esp_modem_page = lv_obj_create(scr);
     lv_coord_t modem_scr_height = lv_disp_get_ver_res(NULL);
@@ -4198,14 +4213,226 @@ static void show_esp_modem_page(void)
     lv_obj_send_event(esp_modem_scan_btn, LV_EVENT_CLICKED, NULL);
 }
 
+//==================================================================================
+// Blackout Attack Popup
+//==================================================================================
+
+// Close blackout popup helper
+static void close_blackout_popup(void)
+{
+    if (blackout_popup_overlay) {
+        lv_obj_del(blackout_popup_overlay);
+        blackout_popup_overlay = NULL;
+        blackout_popup_obj = NULL;
+    }
+}
+
+// Callback when user confirms "Yes" on blackout confirmation
+static void blackout_confirm_yes_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Blackout confirmed - starting attack");
+    
+    // Close confirmation popup
+    close_blackout_popup();
+    
+    // Show active attack popup
+    show_blackout_active_popup();
+}
+
+// Callback when user clicks "No" on blackout confirmation
+static void blackout_confirm_no_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Blackout cancelled by user");
+    
+    // Just close popup
+    close_blackout_popup();
+}
+
+// Callback when user clicks "Stop" during blackout attack
+static void blackout_stop_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Blackout stopped by user - sending stop command");
+    
+    // Send stop command via UART1 (always UART1)
+    uart_send_command("stop");
+    
+    // Close popup
+    close_blackout_popup();
+    
+    // Return to main screen
+    show_main_tiles();
+}
+
+// Show blackout confirmation popup with skull and warning
+static void show_blackout_confirm_popup(void)
+{
+    if (blackout_popup_obj != NULL) return;  // Already showing
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Create modal overlay (full screen, semi-transparent, blocks input behind)
+    blackout_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(blackout_popup_overlay);
+    lv_obj_set_size(blackout_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(blackout_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(blackout_popup_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(blackout_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(blackout_popup_overlay, LV_OBJ_FLAG_CLICKABLE);  // Capture clicks
+    
+    // Create popup as child of overlay
+    blackout_popup_obj = lv_obj_create(blackout_popup_overlay);
+    lv_obj_set_size(blackout_popup_obj, 500, 350);
+    lv_obj_center(blackout_popup_obj);
+    lv_obj_set_style_bg_color(blackout_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(blackout_popup_obj, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_border_width(blackout_popup_obj, 3, 0);
+    lv_obj_set_style_radius(blackout_popup_obj, 16, 0);
+    lv_obj_set_style_shadow_width(blackout_popup_obj, 30, 0);
+    lv_obj_set_style_shadow_color(blackout_popup_obj, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(blackout_popup_obj, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(blackout_popup_obj, 20, 0);
+    lv_obj_set_flex_flow(blackout_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(blackout_popup_obj, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(blackout_popup_obj, 16, 0);
+    lv_obj_clear_flag(blackout_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Warning icon (skull not available in font, use warning symbol)
+    lv_obj_t *skull_label = lv_label_create(blackout_popup_obj);
+    lv_label_set_text(skull_label, LV_SYMBOL_WARNING);
+    lv_obj_set_style_text_font(skull_label, &lv_font_montserrat_44, 0);
+    lv_obj_set_style_text_color(skull_label, COLOR_MATERIAL_RED, 0);
+    
+    // Warning title
+    lv_obj_t *title = lv_label_create(blackout_popup_obj);
+    lv_label_set_text(title, "BLACKOUT");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_RED, 0);
+    
+    // Warning message
+    lv_obj_t *message = lv_label_create(blackout_popup_obj);
+    lv_label_set_text(message, "This will deauth all networks\naround you. Are you sure?");
+    lv_obj_set_style_text_font(message, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(message, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
+    
+    // Button container
+    lv_obj_t *btn_container = lv_obj_create(blackout_popup_obj);
+    lv_obj_remove_style_all(btn_container);
+    lv_obj_set_size(btn_container, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(btn_container, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btn_container, 30, 0);
+    lv_obj_set_style_pad_top(btn_container, 10, 0);
+    
+    // No button (green, safe option)
+    lv_obj_t *no_btn = lv_btn_create(btn_container);
+    lv_obj_set_size(no_btn, 120, 50);
+    lv_obj_set_style_bg_color(no_btn, COLOR_MATERIAL_GREEN, 0);
+    lv_obj_set_style_radius(no_btn, 8, 0);
+    lv_obj_add_event_cb(no_btn, blackout_confirm_no_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *no_label = lv_label_create(no_btn);
+    lv_label_set_text(no_label, "No");
+    lv_obj_set_style_text_font(no_label, &lv_font_montserrat_18, 0);
+    lv_obj_center(no_label);
+    
+    // Yes button (red, dangerous option)
+    lv_obj_t *yes_btn = lv_btn_create(btn_container);
+    lv_obj_set_size(yes_btn, 120, 50);
+    lv_obj_set_style_bg_color(yes_btn, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_radius(yes_btn, 8, 0);
+    lv_obj_add_event_cb(yes_btn, blackout_confirm_yes_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *yes_label = lv_label_create(yes_btn);
+    lv_label_set_text(yes_label, "Yes");
+    lv_obj_set_style_text_font(yes_label, &lv_font_montserrat_18, 0);
+    lv_obj_center(yes_label);
+}
+
+// Show blackout active popup with Attack in Progress and Stop button
+static void show_blackout_active_popup(void)
+{
+    if (blackout_popup_obj != NULL) return;  // Already showing
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Send start_blackout command via UART1 (always UART1, regardless of Monster/Kraken)
+    ESP_LOGI(TAG, "Sending start_blackout command via UART1");
+    uart_send_command("start_blackout");
+    
+    // Create modal overlay
+    blackout_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(blackout_popup_overlay);
+    lv_obj_set_size(blackout_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(blackout_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(blackout_popup_overlay, LV_OPA_70, 0);
+    lv_obj_clear_flag(blackout_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(blackout_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Create popup
+    blackout_popup_obj = lv_obj_create(blackout_popup_overlay);
+    lv_obj_set_size(blackout_popup_obj, 450, 300);
+    lv_obj_center(blackout_popup_obj);
+    lv_obj_set_style_bg_color(blackout_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(blackout_popup_obj, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_border_width(blackout_popup_obj, 3, 0);
+    lv_obj_set_style_radius(blackout_popup_obj, 16, 0);
+    lv_obj_set_style_shadow_width(blackout_popup_obj, 30, 0);
+    lv_obj_set_style_shadow_color(blackout_popup_obj, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(blackout_popup_obj, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(blackout_popup_obj, 20, 0);
+    lv_obj_set_flex_flow(blackout_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(blackout_popup_obj, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(blackout_popup_obj, 20, 0);
+    lv_obj_clear_flag(blackout_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Warning icon
+    lv_obj_t *skull_label = lv_label_create(blackout_popup_obj);
+    lv_label_set_text(skull_label, LV_SYMBOL_WARNING);
+    lv_obj_set_style_text_font(skull_label, &lv_font_montserrat_44, 0);
+    lv_obj_set_style_text_color(skull_label, COLOR_MATERIAL_RED, 0);
+    
+    // Attack in progress title
+    lv_obj_t *title = lv_label_create(blackout_popup_obj);
+    lv_label_set_text(title, "Attack in Progress");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_RED, 0);
+    
+    // Subtitle
+    lv_obj_t *subtitle = lv_label_create(blackout_popup_obj);
+    lv_label_set_text(subtitle, "Deauthing all networks...");
+    lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(subtitle, lv_color_hex(0xAAAAAA), 0);
+    
+    // Stop button
+    lv_obj_t *stop_btn = lv_btn_create(blackout_popup_obj);
+    lv_obj_set_size(stop_btn, 180, 55);
+    lv_obj_set_style_bg_color(stop_btn, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_radius(stop_btn, 8, 0);
+    lv_obj_add_event_cb(stop_btn, blackout_stop_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *stop_label = lv_label_create(stop_btn);
+    lv_label_set_text(stop_label, LV_SYMBOL_STOP " Stop");
+    lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_20, 0);
+    lv_obj_center(stop_label);
+}
+
 // Global attack tile event handler
 static void global_attack_tile_event_cb(lv_event_t *e)
 {
     const char *attack_name = (const char *)lv_event_get_user_data(e);
     ESP_LOGI(TAG, "Global attack tile clicked: %s", attack_name);
     
-    // TODO: Implement actual attack logic for each type
-    // - Blackout
+    // Handle Blackout attack
+    if (strcmp(attack_name, "Blackout") == 0) {
+        show_blackout_confirm_popup();
+        return;
+    }
+    
+    // TODO: Implement actual attack logic for other types
     // - Handshakes
     // - Portal
     // - Snifferdog
@@ -4264,6 +4491,9 @@ static void show_global_attacks_page(void)
     
     // Create/update status bar
     create_status_bar();
+    
+    // Update eye icon visibility (Kraken background scanning)
+    update_kraken_eye_icon();
     
     // Create global attacks page container below status bar
     global_attacks_page = lv_obj_create(scr);
@@ -5351,6 +5581,9 @@ static void show_settings_page(void)
     
     // Create/update status bar
     create_status_bar();
+    
+    // Update eye icon visibility (Kraken background scanning)
+    update_kraken_eye_icon();
     
     // Create settings page container below status bar
     settings_page = lv_obj_create(scr);
