@@ -252,6 +252,28 @@ static lv_obj_t *global_handshaker_status_label = NULL;
 static volatile bool global_handshaker_monitoring = false;
 static TaskHandle_t global_handshaker_monitor_task_handle = NULL;
 
+// LVGL UI elements - Phishing Portal popup
+static lv_obj_t *phishing_portal_popup_overlay = NULL;
+static lv_obj_t *phishing_portal_popup_obj = NULL;
+static lv_obj_t *phishing_portal_ssid_textarea = NULL;
+static lv_obj_t *phishing_portal_keyboard = NULL;
+static lv_obj_t *phishing_portal_html_dropdown = NULL;
+static lv_obj_t *phishing_portal_status_label = NULL;
+static lv_obj_t *phishing_portal_data_label = NULL;
+static volatile bool phishing_portal_monitoring = false;
+static TaskHandle_t phishing_portal_monitor_task_handle = NULL;
+static int phishing_portal_submit_count = 0;
+static char phishing_portal_ssid[64] = {0};
+
+// LVGL UI elements - Wardrive popup
+static lv_obj_t *wardrive_popup_overlay = NULL;
+static lv_obj_t *wardrive_popup_obj = NULL;
+static lv_obj_t *wardrive_status_label = NULL;
+static lv_obj_t *wardrive_log_label = NULL;
+static volatile bool wardrive_monitoring = false;
+static TaskHandle_t wardrive_monitor_task_handle = NULL;
+static bool wardrive_gps_fix_obtained = false;
+
 // Forward declarations
 static void show_main_tiles(void);
 static void show_scan_page(void);
@@ -327,6 +349,14 @@ static void global_handshaker_confirm_no_cb(lv_event_t *e);
 static void show_global_handshaker_active_popup(void);
 static void global_handshaker_stop_cb(lv_event_t *e);
 static void global_handshaker_monitor_task(void *arg);
+static void show_phishing_portal_popup(void);
+static void phishing_portal_start_cb(lv_event_t *e);
+static void phishing_portal_close_cb(lv_event_t *e);
+static void phishing_portal_stop_cb(lv_event_t *e);
+static void phishing_portal_monitor_task(void *arg);
+static void show_wardrive_popup(void);
+static void wardrive_stop_cb(lv_event_t *e);
+static void wardrive_monitor_task(void *arg);
 
 //==================================================================================
 // INA226 Power Monitor Driver
@@ -4950,6 +4980,607 @@ static void show_global_handshaker_active_popup(void)
     xTaskCreate(global_handshaker_monitor_task, "gh_monitor", 4096, NULL, 5, &global_handshaker_monitor_task_handle);
 }
 
+//==================================================================================
+// Phishing Portal Attack Popup
+//==================================================================================
+
+// Close phishing portal popup helper
+static void close_phishing_portal_popup(void)
+{
+    // Stop monitoring task first
+    phishing_portal_monitoring = false;
+    if (phishing_portal_monitor_task_handle != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(100));  // Give task time to exit
+        phishing_portal_monitor_task_handle = NULL;
+    }
+    
+    if (phishing_portal_popup_overlay) {
+        lv_obj_del(phishing_portal_popup_overlay);
+        phishing_portal_popup_overlay = NULL;
+        phishing_portal_popup_obj = NULL;
+        phishing_portal_ssid_textarea = NULL;
+        phishing_portal_keyboard = NULL;
+        phishing_portal_html_dropdown = NULL;
+        phishing_portal_status_label = NULL;
+        phishing_portal_data_label = NULL;
+    }
+}
+
+// Callback when user clicks Cancel on setup popup
+static void phishing_portal_close_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Phishing Portal cancelled");
+    close_phishing_portal_popup();
+}
+
+// Callback when user clicks Stop during active portal
+static void phishing_portal_stop_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Phishing Portal stopped - sending stop command");
+    
+    // Send stop command via UART1
+    uart_send_command("stop");
+    
+    // Close popup
+    close_phishing_portal_popup();
+    
+    // Return to main screen
+    show_main_tiles();
+}
+
+// Phishing portal monitor task - reads UART for form submissions
+static void phishing_portal_monitor_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "Phishing Portal monitor task started");
+    
+    static char rx_buffer[512];
+    static char line_buffer[512];
+    int line_pos = 0;
+    
+    while (phishing_portal_monitoring) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            
+            for (int i = 0; i < len; i++) {
+                char c = rx_buffer[i];
+                
+                if (c == '\n' || c == '\r') {
+                    if (line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
+                        
+                        // Check for password/form data capture
+                        // Pattern: "Password: xxx" or other form fields
+                        char *password_ptr = strstr(line_buffer, "Password:");
+                        if (password_ptr != NULL) {
+                            char *value_start = password_ptr + strlen("Password:");
+                            while (*value_start == ' ') value_start++;
+                            
+                            phishing_portal_submit_count++;
+                            
+                            char status_msg[64];
+                            snprintf(status_msg, sizeof(status_msg), "Submitted forms: %d", phishing_portal_submit_count);
+                            
+                            char data_msg[256];
+                            snprintf(data_msg, sizeof(data_msg), "Last captured: %s", value_start);
+                            
+                            ESP_LOGI(TAG, "Portal captured password: %s", value_start);
+                            
+                            // Update UI
+                            bsp_display_lock(0);
+                            if (phishing_portal_status_label) {
+                                lv_label_set_text(phishing_portal_status_label, status_msg);
+                            }
+                            if (phishing_portal_data_label) {
+                                lv_label_set_text(phishing_portal_data_label, data_msg);
+                                lv_obj_set_style_text_color(phishing_portal_data_label, COLOR_MATERIAL_GREEN, 0);
+                            }
+                            bsp_display_unlock();
+                        }
+                        
+                        // Check for client connection
+                        if (strstr(line_buffer, "Client connected") != NULL) {
+                            ESP_LOGI(TAG, "Portal: %s", line_buffer);
+                        }
+                        
+                        // Check for portal data saved
+                        if (strstr(line_buffer, "Portal data saved") != NULL) {
+                            ESP_LOGI(TAG, "Portal data saved to file");
+                        }
+                        
+                        line_pos = 0;
+                    }
+                } else if (line_pos < (int)sizeof(line_buffer) - 1) {
+                    line_buffer[line_pos++] = c;
+                }
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    
+    ESP_LOGI(TAG, "Phishing Portal monitor task ended");
+    phishing_portal_monitor_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+// Show active portal popup
+static void show_phishing_portal_active_popup(void)
+{
+    if (phishing_portal_popup_obj != NULL) return;
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Reset submit count
+    phishing_portal_submit_count = 0;
+    
+    // Create modal overlay
+    phishing_portal_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(phishing_portal_popup_overlay);
+    lv_obj_set_size(phishing_portal_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(phishing_portal_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(phishing_portal_popup_overlay, LV_OPA_70, 0);
+    lv_obj_clear_flag(phishing_portal_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(phishing_portal_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Create popup
+    phishing_portal_popup_obj = lv_obj_create(phishing_portal_popup_overlay);
+    lv_obj_set_size(phishing_portal_popup_obj, 500, 380);
+    lv_obj_center(phishing_portal_popup_obj);
+    lv_obj_set_style_bg_color(phishing_portal_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(phishing_portal_popup_obj, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_border_width(phishing_portal_popup_obj, 3, 0);
+    lv_obj_set_style_radius(phishing_portal_popup_obj, 16, 0);
+    lv_obj_set_style_shadow_width(phishing_portal_popup_obj, 30, 0);
+    lv_obj_set_style_shadow_color(phishing_portal_popup_obj, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(phishing_portal_popup_obj, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(phishing_portal_popup_obj, 20, 0);
+    lv_obj_set_flex_flow(phishing_portal_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(phishing_portal_popup_obj, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(phishing_portal_popup_obj, 16, 0);
+    lv_obj_clear_flag(phishing_portal_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // WiFi icon
+    lv_obj_t *icon_label = lv_label_create(phishing_portal_popup_obj);
+    lv_label_set_text(icon_label, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_44, 0);
+    lv_obj_set_style_text_color(icon_label, COLOR_MATERIAL_ORANGE, 0);
+    
+    // Title with SSID
+    lv_obj_t *title = lv_label_create(phishing_portal_popup_obj);
+    char title_text[128];
+    snprintf(title_text, sizeof(title_text), "Portal Active: %s", phishing_portal_ssid);
+    lv_label_set_text(title, title_text);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_ORANGE, 0);
+    
+    // Status label (submitted forms count)
+    phishing_portal_status_label = lv_label_create(phishing_portal_popup_obj);
+    lv_label_set_text(phishing_portal_status_label, "Submitted forms: 0");
+    lv_obj_set_style_text_font(phishing_portal_status_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(phishing_portal_status_label, lv_color_hex(0xCCCCCC), 0);
+    
+    // Data label (last captured data)
+    phishing_portal_data_label = lv_label_create(phishing_portal_popup_obj);
+    lv_label_set_text(phishing_portal_data_label, "Last captured: --");
+    lv_obj_set_style_text_font(phishing_portal_data_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(phishing_portal_data_label, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_align(phishing_portal_data_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(phishing_portal_data_label, lv_pct(90));
+    lv_label_set_long_mode(phishing_portal_data_label, LV_LABEL_LONG_WRAP);
+    
+    // Stop button
+    lv_obj_t *stop_btn = lv_btn_create(phishing_portal_popup_obj);
+    lv_obj_set_size(stop_btn, 180, 55);
+    lv_obj_set_style_bg_color(stop_btn, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_radius(stop_btn, 8, 0);
+    lv_obj_add_event_cb(stop_btn, phishing_portal_stop_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *stop_label = lv_label_create(stop_btn);
+    lv_label_set_text(stop_label, LV_SYMBOL_STOP " Stop");
+    lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_20, 0);
+    lv_obj_center(stop_label);
+    
+    // Start monitoring task
+    phishing_portal_monitoring = true;
+    xTaskCreate(phishing_portal_monitor_task, "pp_monitor", 4096, NULL, 5, &phishing_portal_monitor_task_handle);
+}
+
+// Callback when user clicks OK to start portal
+static void phishing_portal_start_cb(lv_event_t *e)
+{
+    (void)e;
+    
+    // Get SSID from textarea
+    const char *ssid = lv_textarea_get_text(phishing_portal_ssid_textarea);
+    if (ssid == NULL || strlen(ssid) == 0) {
+        ESP_LOGW(TAG, "SSID is empty");
+        return;
+    }
+    
+    // Save SSID for display
+    strncpy(phishing_portal_ssid, ssid, sizeof(phishing_portal_ssid) - 1);
+    phishing_portal_ssid[sizeof(phishing_portal_ssid) - 1] = '\0';
+    
+    // Get selected HTML index
+    int html_idx = lv_dropdown_get_selected(phishing_portal_html_dropdown);
+    
+    ESP_LOGI(TAG, "Starting Phishing Portal - SSID: %s, HTML index: %d", phishing_portal_ssid, html_idx);
+    
+    // Close setup popup first
+    close_phishing_portal_popup();
+    
+    // Send commands via UART1
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "select_html %d", html_idx);
+    uart_send_command(cmd);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    snprintf(cmd, sizeof(cmd), "start_portal %s", phishing_portal_ssid);
+    uart_send_command(cmd);
+    
+    // Show active popup
+    show_phishing_portal_active_popup();
+}
+
+// Keyboard event handler - hide keyboard when done
+static void phishing_portal_keyboard_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *kb = lv_event_get_target(e);
+    
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// Textarea focus handler - show keyboard when focused
+static void phishing_portal_textarea_focus_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    
+    if (code == LV_EVENT_FOCUSED) {
+        if (phishing_portal_keyboard) {
+            lv_keyboard_set_textarea(phishing_portal_keyboard, phishing_portal_ssid_textarea);
+            lv_obj_clear_flag(phishing_portal_keyboard, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else if (code == LV_EVENT_DEFOCUSED) {
+        if (phishing_portal_keyboard) {
+            lv_obj_add_flag(phishing_portal_keyboard, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+// Show phishing portal setup popup
+static void show_phishing_portal_popup(void)
+{
+    if (phishing_portal_popup_obj != NULL) return;
+    
+    // Show loading overlay while fetching HTML files
+    show_evil_twin_loading_overlay();
+    lv_refr_now(NULL);
+    
+    // Fetch HTML files from SD (reuse evil twin's array)
+    fetch_html_files_from_sd();
+    
+    // Hide loading overlay
+    hide_evil_twin_loading_overlay();
+    
+    if (evil_twin_html_count == 0) {
+        ESP_LOGW(TAG, "No HTML files found on SD card");
+        return;
+    }
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Create modal overlay
+    phishing_portal_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(phishing_portal_popup_overlay);
+    lv_obj_set_size(phishing_portal_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(phishing_portal_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(phishing_portal_popup_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(phishing_portal_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(phishing_portal_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Create popup
+    phishing_portal_popup_obj = lv_obj_create(phishing_portal_popup_overlay);
+    lv_obj_set_size(phishing_portal_popup_obj, 600, 480);
+    lv_obj_center(phishing_portal_popup_obj);
+    lv_obj_set_style_bg_color(phishing_portal_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(phishing_portal_popup_obj, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_border_width(phishing_portal_popup_obj, 2, 0);
+    lv_obj_set_style_radius(phishing_portal_popup_obj, 16, 0);
+    lv_obj_set_style_shadow_width(phishing_portal_popup_obj, 30, 0);
+    lv_obj_set_style_shadow_color(phishing_portal_popup_obj, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(phishing_portal_popup_obj, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(phishing_portal_popup_obj, 16, 0);
+    lv_obj_set_flex_flow(phishing_portal_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(phishing_portal_popup_obj, 12, 0);
+    lv_obj_clear_flag(phishing_portal_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(phishing_portal_popup_obj);
+    lv_label_set_text(title, LV_SYMBOL_WIFI " Phishing Portal");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_ORANGE, 0);
+    
+    // SSID label
+    lv_obj_t *ssid_label = lv_label_create(phishing_portal_popup_obj);
+    lv_label_set_text(ssid_label, "Enter SSID:");
+    lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xCCCCCC), 0);
+    
+    // SSID textarea
+    phishing_portal_ssid_textarea = lv_textarea_create(phishing_portal_popup_obj);
+    lv_obj_set_size(phishing_portal_ssid_textarea, lv_pct(90), 45);
+    lv_textarea_set_placeholder_text(phishing_portal_ssid_textarea, "WiFi Network Name");
+    lv_textarea_set_one_line(phishing_portal_ssid_textarea, true);
+    lv_textarea_set_max_length(phishing_portal_ssid_textarea, 32);
+    lv_obj_set_style_bg_color(phishing_portal_ssid_textarea, lv_color_hex(0x2A2A3A), 0);
+    lv_obj_set_style_border_color(phishing_portal_ssid_textarea, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_text_color(phishing_portal_ssid_textarea, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_add_event_cb(phishing_portal_ssid_textarea, phishing_portal_textarea_focus_cb, LV_EVENT_ALL, NULL);
+    
+    // HTML file label
+    lv_obj_t *html_label = lv_label_create(phishing_portal_popup_obj);
+    lv_label_set_text(html_label, "Select Portal HTML:");
+    lv_obj_set_style_text_font(html_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(html_label, lv_color_hex(0xCCCCCC), 0);
+    
+    // HTML dropdown (reuse evil twin's file list)
+    phishing_portal_html_dropdown = lv_dropdown_create(phishing_portal_popup_obj);
+    lv_obj_set_size(phishing_portal_html_dropdown, lv_pct(90), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(phishing_portal_html_dropdown, lv_color_hex(0x2A2A3A), 0);
+    lv_obj_set_style_border_color(phishing_portal_html_dropdown, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_text_color(phishing_portal_html_dropdown, lv_color_hex(0xFFFFFF), 0);
+    
+    // Build dropdown options from evil_twin_html_files
+    static char html_options[1024];
+    html_options[0] = '\0';
+    for (int i = 0; i < evil_twin_html_count; i++) {
+        if (i > 0) strcat(html_options, "\n");
+        strcat(html_options, evil_twin_html_files[i]);
+    }
+    lv_dropdown_set_options(phishing_portal_html_dropdown, html_options);
+    
+    // Button container
+    lv_obj_t *btn_container = lv_obj_create(phishing_portal_popup_obj);
+    lv_obj_remove_style_all(btn_container);
+    lv_obj_set_size(btn_container, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(btn_container, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btn_container, 20, 0);
+    lv_obj_set_style_pad_top(btn_container, 10, 0);
+    
+    // Cancel button
+    lv_obj_t *cancel_btn = lv_btn_create(btn_container);
+    lv_obj_set_size(cancel_btn, 120, 45);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(cancel_btn, 8, 0);
+    lv_obj_add_event_cb(cancel_btn, phishing_portal_close_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *cancel_label = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_label, "Cancel");
+    lv_obj_set_style_text_font(cancel_label, &lv_font_montserrat_16, 0);
+    lv_obj_center(cancel_label);
+    
+    // OK button
+    lv_obj_t *ok_btn = lv_btn_create(btn_container);
+    lv_obj_set_size(ok_btn, 120, 45);
+    lv_obj_set_style_bg_color(ok_btn, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_radius(ok_btn, 8, 0);
+    lv_obj_add_event_cb(ok_btn, phishing_portal_start_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *ok_label = lv_label_create(ok_btn);
+    lv_label_set_text(ok_label, "Start");
+    lv_obj_set_style_text_font(ok_label, &lv_font_montserrat_16, 0);
+    lv_obj_center(ok_label);
+    
+    // Create keyboard (hidden by default)
+    phishing_portal_keyboard = lv_keyboard_create(phishing_portal_popup_overlay);
+    lv_obj_set_size(phishing_portal_keyboard, lv_pct(100), 200);
+    lv_obj_align(phishing_portal_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(phishing_portal_keyboard, phishing_portal_ssid_textarea);
+    lv_obj_add_event_cb(phishing_portal_keyboard, phishing_portal_keyboard_cb, LV_EVENT_ALL, NULL);
+    lv_obj_add_flag(phishing_portal_keyboard, LV_OBJ_FLAG_HIDDEN);
+}
+
+//==================================================================================
+// Wardrive Attack Popup
+//==================================================================================
+
+// Close wardrive popup helper
+static void close_wardrive_popup(void)
+{
+    // Stop monitoring task first
+    wardrive_monitoring = false;
+    if (wardrive_monitor_task_handle != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(100));  // Give task time to exit
+        wardrive_monitor_task_handle = NULL;
+    }
+    
+    if (wardrive_popup_overlay) {
+        lv_obj_del(wardrive_popup_overlay);
+        wardrive_popup_overlay = NULL;
+        wardrive_popup_obj = NULL;
+        wardrive_status_label = NULL;
+        wardrive_log_label = NULL;
+    }
+    
+    wardrive_gps_fix_obtained = false;
+}
+
+// Callback when user clicks Stop
+static void wardrive_stop_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Wardrive stopped - sending stop command");
+    
+    // Send stop command via UART1
+    uart_send_command("stop");
+    
+    // Close popup
+    close_wardrive_popup();
+    
+    // Return to main screen
+    show_main_tiles();
+}
+
+// Wardrive monitor task - reads UART for GPS fix and log messages
+static void wardrive_monitor_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "Wardrive monitor task started");
+    
+    static char rx_buffer[512];
+    static char line_buffer[512];
+    int line_pos = 0;
+    
+    while (wardrive_monitoring) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            
+            for (int i = 0; i < len; i++) {
+                char c = rx_buffer[i];
+                
+                if (c == '\n' || c == '\r') {
+                    if (line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
+                        
+                        // Check for GPS fix obtained
+                        if (!wardrive_gps_fix_obtained && strstr(line_buffer, "GPS fix obtained") != NULL) {
+                            wardrive_gps_fix_obtained = true;
+                            ESP_LOGI(TAG, "Wardrive: GPS fix obtained");
+                            
+                            bsp_display_lock(0);
+                            if (wardrive_status_label) {
+                                lv_label_set_text(wardrive_status_label, "GPS Fix Acquired");
+                                lv_obj_set_style_text_color(wardrive_status_label, COLOR_MATERIAL_GREEN, 0);
+                            }
+                            bsp_display_unlock();
+                        }
+                        
+                        // Check for logged networks message
+                        // Pattern: "Logged X networks to /path/file.log"
+                        char *logged_ptr = strstr(line_buffer, "Logged ");
+                        if (logged_ptr != NULL && strstr(line_buffer, " networks to ") != NULL) {
+                            ESP_LOGI(TAG, "Wardrive: %s", line_buffer);
+                            
+                            bsp_display_lock(0);
+                            if (wardrive_log_label) {
+                                lv_label_set_text(wardrive_log_label, line_buffer);
+                                lv_obj_set_style_text_color(wardrive_log_label, COLOR_MATERIAL_GREEN, 0);
+                            }
+                            bsp_display_unlock();
+                        }
+                        
+                        line_pos = 0;
+                    }
+                } else if (line_pos < (int)sizeof(line_buffer) - 1) {
+                    line_buffer[line_pos++] = c;
+                }
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    
+    ESP_LOGI(TAG, "Wardrive monitor task ended");
+    wardrive_monitor_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+// Show wardrive popup
+static void show_wardrive_popup(void)
+{
+    if (wardrive_popup_obj != NULL) return;
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Reset state
+    wardrive_gps_fix_obtained = false;
+    
+    // Send start_wardrive command via UART1
+    ESP_LOGI(TAG, "Sending start_wardrive command via UART1");
+    uart_send_command("start_wardrive");
+    
+    // Create modal overlay
+    wardrive_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(wardrive_popup_overlay);
+    lv_obj_set_size(wardrive_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(wardrive_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(wardrive_popup_overlay, LV_OPA_70, 0);
+    lv_obj_clear_flag(wardrive_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(wardrive_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Create popup
+    wardrive_popup_obj = lv_obj_create(wardrive_popup_overlay);
+    lv_obj_set_size(wardrive_popup_obj, 550, 380);
+    lv_obj_center(wardrive_popup_obj);
+    lv_obj_set_style_bg_color(wardrive_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(wardrive_popup_obj, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_border_width(wardrive_popup_obj, 3, 0);
+    lv_obj_set_style_radius(wardrive_popup_obj, 16, 0);
+    lv_obj_set_style_shadow_width(wardrive_popup_obj, 30, 0);
+    lv_obj_set_style_shadow_color(wardrive_popup_obj, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(wardrive_popup_obj, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(wardrive_popup_obj, 20, 0);
+    lv_obj_set_flex_flow(wardrive_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(wardrive_popup_obj, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(wardrive_popup_obj, 16, 0);
+    lv_obj_clear_flag(wardrive_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // GPS icon
+    lv_obj_t *icon_label = lv_label_create(wardrive_popup_obj);
+    lv_label_set_text(icon_label, LV_SYMBOL_GPS);
+    lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_44, 0);
+    lv_obj_set_style_text_color(icon_label, COLOR_MATERIAL_TEAL, 0);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(wardrive_popup_obj);
+    lv_label_set_text(title, "Wardrive Active");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_TEAL, 0);
+    
+    // Status label (GPS fix status)
+    wardrive_status_label = lv_label_create(wardrive_popup_obj);
+    lv_label_set_text(wardrive_status_label, "Acquiring GPS Fix,\nneed clear view of the sky.");
+    lv_obj_set_style_text_font(wardrive_status_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(wardrive_status_label, COLOR_MATERIAL_AMBER, 0);
+    lv_obj_set_style_text_align(wardrive_status_label, LV_TEXT_ALIGN_CENTER, 0);
+    
+    // Log label (shows "Logged X networks..." messages)
+    wardrive_log_label = lv_label_create(wardrive_popup_obj);
+    lv_label_set_text(wardrive_log_label, "Waiting for scan results...");
+    lv_obj_set_style_text_font(wardrive_log_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(wardrive_log_label, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_align(wardrive_log_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(wardrive_log_label, lv_pct(90));
+    lv_label_set_long_mode(wardrive_log_label, LV_LABEL_LONG_WRAP);
+    
+    // Stop button
+    lv_obj_t *stop_btn = lv_btn_create(wardrive_popup_obj);
+    lv_obj_set_size(stop_btn, 180, 55);
+    lv_obj_set_style_bg_color(stop_btn, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_radius(stop_btn, 8, 0);
+    lv_obj_add_event_cb(stop_btn, wardrive_stop_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *stop_label = lv_label_create(stop_btn);
+    lv_label_set_text(stop_label, LV_SYMBOL_STOP " Stop");
+    lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_20, 0);
+    lv_obj_center(stop_label);
+    
+    // Start monitoring task
+    wardrive_monitoring = true;
+    xTaskCreate(wardrive_monitor_task, "wd_monitor", 4096, NULL, 5, &wardrive_monitor_task_handle);
+}
+
 // Global attack tile event handler
 static void global_attack_tile_event_cb(lv_event_t *e)
 {
@@ -4974,9 +5605,17 @@ static void global_attack_tile_event_cb(lv_event_t *e)
         return;
     }
     
-    // TODO: Implement actual attack logic for other types
-    // - Portal
-    // - Wardrive
+    // Handle Phishing Portal attack
+    if (strcmp(attack_name, "Portal") == 0) {
+        show_phishing_portal_popup();
+        return;
+    }
+    
+    // Handle Wardrive attack
+    if (strcmp(attack_name, "Wardrive") == 0) {
+        show_wardrive_popup();
+        return;
+    }
 }
 
 // Show Global WiFi Attacks page
