@@ -300,6 +300,42 @@ typedef struct {
 static arp_host_t arp_hosts[ARP_MAX_HOSTS];
 static int arp_host_count = 0;
 
+// Karma Attack page
+static lv_obj_t *karma_page = NULL;
+static lv_obj_t *karma_probes_container = NULL;
+static lv_obj_t *karma_status_label = NULL;
+static lv_obj_t *karma_start_sniffer_btn = NULL;
+static lv_obj_t *karma_stop_sniffer_btn = NULL;
+static bool karma_sniffer_running = false;
+
+// Karma HTML selection popup
+static lv_obj_t *karma_html_popup_overlay = NULL;
+static lv_obj_t *karma_html_popup_obj = NULL;
+static lv_obj_t *karma_html_dropdown = NULL;
+static int karma_selected_probe_idx = -1;
+
+// Karma attack popup (active attack)
+static lv_obj_t *karma_attack_popup_overlay = NULL;
+static lv_obj_t *karma_attack_popup_obj = NULL;
+static lv_obj_t *karma_attack_ssid_label = NULL;
+static lv_obj_t *karma_attack_mac_label = NULL;
+static lv_obj_t *karma_attack_password_label = NULL;
+static volatile bool karma_monitoring = false;
+static TaskHandle_t karma_monitor_task_handle = NULL;
+
+// Karma probe storage
+#define KARMA_MAX_PROBES 64
+typedef struct {
+    int index;
+    char ssid[33];
+} karma_probe_t;
+static karma_probe_t karma_probes[KARMA_MAX_PROBES];
+static int karma_probe_count = 0;
+
+// Karma HTML files (reuse evil twin storage)
+static char karma_html_files[20][64];
+static int karma_html_count = 0;
+
 // Deauth Detector
 #define DEAUTH_DETECTOR_MAX_ENTRIES 200
 typedef struct {
@@ -392,6 +428,16 @@ static void arp_connect_cb(lv_event_t *e);
 static void arp_list_hosts_cb(lv_event_t *e);
 static void arp_host_click_cb(lv_event_t *e);
 static void arp_attack_popup_close_cb(lv_event_t *e);
+static void show_karma_page(void);
+static void karma_back_cb(lv_event_t *e);
+static void karma_start_sniffer_cb(lv_event_t *e);
+static void karma_stop_sniffer_cb(lv_event_t *e);
+static void karma_show_probes_cb(lv_event_t *e);
+static void karma_probe_click_cb(lv_event_t *e);
+static void karma_html_popup_close_cb(lv_event_t *e);
+static void karma_html_select_cb(lv_event_t *e);
+static void karma_attack_popup_close_cb(lv_event_t *e);
+static void karma_monitor_task(void *arg);
 static void show_scan_overlay(void);
 static void hide_scan_overlay(void);
 static void show_evil_twin_loading_overlay(void);
@@ -1300,6 +1346,8 @@ static void main_tile_event_cb(lv_event_t *e)
         show_observer_page();
     } else if (strcmp(tile_name, "Internal C6 Test") == 0) {
         show_esp_modem_page();
+    } else if (strcmp(tile_name, "Karma") == 0) {
+        show_karma_page();
     } else if (strcmp(tile_name, "Settings") == 0) {
         show_settings_page();
     } else if (strcmp(tile_name, "Compromised Data") == 0) {
@@ -2397,6 +2445,772 @@ static void show_arp_poison_page(void)
     lv_obj_add_flag(arp_keyboard, LV_OBJ_FLAG_HIDDEN);
 }
 
+// ======================= Karma Attack Functions =======================
+
+// Back button callback
+static void karma_back_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Karma: back button pressed");
+    
+    // Stop any monitoring
+    if (karma_monitoring) {
+        karma_monitoring = false;
+        uart_send_command("stop");
+    }
+    
+    karma_probe_count = 0;
+    
+    if (karma_page) {
+        lv_obj_del(karma_page);
+        karma_page = NULL;
+        karma_probes_container = NULL;
+        karma_status_label = NULL;
+    }
+    
+    show_main_tiles();
+}
+
+// Start Sniffer button callback
+static void karma_start_sniffer_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Karma: Starting sniffer");
+    
+    uart_send_command("start_sniffer");
+    karma_sniffer_running = true;
+    
+    // Update button states
+    if (karma_start_sniffer_btn) {
+        lv_obj_add_state(karma_start_sniffer_btn, LV_STATE_DISABLED);
+    }
+    if (karma_stop_sniffer_btn) {
+        lv_obj_clear_state(karma_stop_sniffer_btn, LV_STATE_DISABLED);
+    }
+    
+    if (karma_status_label) {
+        lv_label_set_text(karma_status_label, "Sniffer started - collecting probes...");
+        lv_obj_set_style_text_color(karma_status_label, COLOR_MATERIAL_GREEN, 0);
+    }
+}
+
+// Stop Sniffer button callback  
+static void karma_stop_sniffer_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Karma: Stopping sniffer");
+    
+    uart_send_command("stop");
+    karma_sniffer_running = false;
+    
+    // Update button states
+    if (karma_start_sniffer_btn) {
+        lv_obj_clear_state(karma_start_sniffer_btn, LV_STATE_DISABLED);
+    }
+    if (karma_stop_sniffer_btn) {
+        lv_obj_add_state(karma_stop_sniffer_btn, LV_STATE_DISABLED);
+    }
+    
+    if (karma_status_label) {
+        lv_label_set_text(karma_status_label, "Sniffer stopped");
+        lv_obj_set_style_text_color(karma_status_label, lv_color_hex(0x888888), 0);
+    }
+}
+
+// Show Probes button callback
+static void karma_show_probes_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Karma: Fetching probes...");
+    
+    if (karma_status_label) {
+        lv_label_set_text(karma_status_label, "Fetching probes...");
+        lv_obj_set_style_text_color(karma_status_label, COLOR_MATERIAL_AMBER, 0);
+    }
+    
+    // Force UI refresh
+    lv_refr_now(NULL);
+    bsp_display_unlock();
+    vTaskDelay(pdMS_TO_TICKS(50));
+    
+    // Send list_probes command
+    uart_send_command("list_probes");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    // Read response
+    static char rx_buffer[2048];
+    int total_len = 0;
+    int retries = 10;
+    
+    while (retries-- > 0) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer + total_len, sizeof(rx_buffer) - total_len - 1, pdMS_TO_TICKS(200));
+        if (len > 0) {
+            total_len += len;
+        }
+        if (len <= 0) break;
+    }
+    rx_buffer[total_len] = '\0';
+    
+    ESP_LOGI(TAG, "Karma: list_probes response (%d bytes)", total_len);
+    // Log raw response for debugging
+    ESP_LOGI(TAG, "Karma: Raw response:\n%s", rx_buffer);
+    
+    // Parse probes (format: "1 SSID_Name")
+    karma_probe_count = 0;
+    char *line = strtok(rx_buffer, "\n\r");
+    while (line != NULL && karma_probe_count < KARMA_MAX_PROBES) {
+        // Skip empty lines and non-probe lines
+        char *p = line;
+        while (*p == ' ') p++;
+        
+        // Check if line starts with a number
+        if (isdigit((unsigned char)*p)) {
+            int idx = 0;
+            char ssid[33] = {0};
+            
+            // Parse index
+            while (isdigit((unsigned char)*p)) {
+                idx = idx * 10 + (*p - '0');
+                p++;
+            }
+            
+            // Skip space
+            while (*p == ' ') p++;
+            
+            // Rest is SSID
+            if (*p != '\0' && strlen(p) > 0) {
+                strncpy(ssid, p, sizeof(ssid) - 1);
+                // Trim trailing whitespace
+                size_t len = strlen(ssid);
+                while (len > 0 && isspace((unsigned char)ssid[len - 1])) {
+                    ssid[--len] = '\0';
+                }
+                
+                if (strlen(ssid) > 0) {
+                    karma_probes[karma_probe_count].index = idx;
+                    snprintf(karma_probes[karma_probe_count].ssid, sizeof(karma_probes[0].ssid), "%s", ssid);
+                    karma_probe_count++;
+                    ESP_LOGI(TAG, "Karma probe %d: [%d] %s", karma_probe_count, idx, ssid);
+                }
+            }
+        }
+        line = strtok(NULL, "\n\r");
+    }
+    
+    bsp_display_lock(0);
+    
+    // Update status
+    if (karma_status_label) {
+        if (karma_probe_count > 0) {
+            lv_label_set_text_fmt(karma_status_label, "Found %d probes - click to attack", karma_probe_count);
+            lv_obj_set_style_text_color(karma_status_label, COLOR_MATERIAL_GREEN, 0);
+        } else {
+            lv_label_set_text(karma_status_label, "No probes found - run sniffer first");
+            lv_obj_set_style_text_color(karma_status_label, COLOR_MATERIAL_RED, 0);
+        }
+    }
+    
+    // Display probes in container
+    if (karma_probes_container) {
+        lv_obj_clean(karma_probes_container);
+        
+        for (int i = 0; i < karma_probe_count; i++) {
+            lv_obj_t *row = lv_obj_create(karma_probes_container);
+            lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(row, lv_color_hex(0x2D2D2D), 0);
+            lv_obj_set_style_bg_color(row, lv_color_hex(0x3D3D3D), LV_STATE_PRESSED);
+            lv_obj_set_style_border_width(row, 0, 0);
+            lv_obj_set_style_radius(row, 6, 0);
+            lv_obj_set_style_pad_all(row, 12, 0);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(row, 10, 0);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(row, karma_probe_click_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+            
+            // Index
+            lv_obj_t *idx_lbl = lv_label_create(row);
+            lv_label_set_text_fmt(idx_lbl, "%d.", karma_probes[i].index);
+            lv_obj_set_style_text_font(idx_lbl, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(idx_lbl, lv_color_hex(0x888888), 0);
+            lv_obj_set_width(idx_lbl, 30);
+            
+            // SSID
+            lv_obj_t *ssid_lbl = lv_label_create(row);
+            lv_label_set_text(ssid_lbl, karma_probes[i].ssid);
+            lv_obj_set_style_text_font(ssid_lbl, &lv_font_montserrat_16, 0);
+            lv_obj_set_style_text_color(ssid_lbl, COLOR_MATERIAL_ORANGE, 0);
+        }
+    }
+}
+
+// Fetch HTML files for Karma (similar to Evil Twin)
+static void karma_fetch_html_files(void)
+{
+    karma_html_count = 0;
+    memset(karma_html_files, 0, sizeof(karma_html_files));
+    
+    uart_flush(UART_NUM);
+    uart_send_command("list_sd");
+    
+    static char rx_buffer[2048];
+    static char line_buffer[256];
+    int line_pos = 0;
+    bool header_found = false;
+    
+    TickType_t start_time = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(3000);
+    
+    while ((xTaskGetTickCount() - start_time) < timeout_ticks && karma_html_count < 20) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            
+            for (int i = 0; i < len; i++) {
+                char c = rx_buffer[i];
+                
+                if (c == '\n' || c == '\r') {
+                    if (line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
+                        
+                        // Check for header line
+                        if (strstr(line_buffer, "HTML files found") != NULL) {
+                            header_found = true;
+                        } else if (header_found && line_pos > 2) {
+                            // Parse line format: "1 PLAY.html"
+                            int file_num;
+                            char filename[64];
+                            if (sscanf(line_buffer, "%d %63s", &file_num, filename) == 2) {
+                                snprintf(karma_html_files[karma_html_count], 
+                                         sizeof(karma_html_files[0]), "%s", filename);
+                                ESP_LOGI(TAG, "Karma: Found HTML file %d: %s", file_num, filename);
+                                karma_html_count++;
+                            }
+                        }
+                        
+                        line_pos = 0;
+                    }
+                } else if (line_pos < (int)sizeof(line_buffer) - 1) {
+                    line_buffer[line_pos++] = c;
+                }
+            }
+        }
+    }
+    
+    ESP_LOGI(TAG, "Karma: Found %d HTML files total", karma_html_count);
+}
+
+// Probe click callback - show HTML selection popup
+static void karma_probe_click_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= karma_probe_count) return;
+    
+    karma_selected_probe_idx = idx;
+    ESP_LOGI(TAG, "Karma: Selected probe %d: %s", idx, karma_probes[idx].ssid);
+    
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Create overlay
+    karma_html_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(karma_html_popup_overlay);
+    lv_obj_set_size(karma_html_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(karma_html_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(karma_html_popup_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(karma_html_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(karma_html_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Create popup
+    karma_html_popup_obj = lv_obj_create(karma_html_popup_overlay);
+    lv_obj_set_size(karma_html_popup_obj, 450, 280);
+    lv_obj_center(karma_html_popup_obj);
+    lv_obj_set_style_bg_color(karma_html_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(karma_html_popup_obj, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_border_width(karma_html_popup_obj, 3, 0);
+    lv_obj_set_style_radius(karma_html_popup_obj, 16, 0);
+    lv_obj_set_style_pad_all(karma_html_popup_obj, 20, 0);
+    lv_obj_set_flex_flow(karma_html_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(karma_html_popup_obj, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(karma_html_popup_obj, 15, 0);
+    lv_obj_clear_flag(karma_html_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(karma_html_popup_obj);
+    lv_label_set_text(title, "Select HTML Portal File");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_ORANGE, 0);
+    
+    // Loading spinner
+    lv_obj_t *spinner = lv_spinner_create(karma_html_popup_obj);
+    lv_obj_set_size(spinner, 50, 50);
+    lv_spinner_set_anim_params(spinner, 1000, 200);
+    
+    lv_obj_t *loading_label = lv_label_create(karma_html_popup_obj);
+    lv_label_set_text(loading_label, "Loading HTML files...");
+    lv_obj_set_style_text_font(loading_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(loading_label, lv_color_hex(0x888888), 0);
+    
+    // Force refresh to show loading state
+    lv_refr_now(NULL);
+    bsp_display_unlock();
+    
+    // Fetch HTML files
+    karma_fetch_html_files();
+    
+    bsp_display_lock(0);
+    
+    // Remove loading elements
+    lv_obj_del(spinner);
+    lv_obj_del(loading_label);
+    
+    if (karma_html_count == 0) {
+        lv_obj_t *error_label = lv_label_create(karma_html_popup_obj);
+        lv_label_set_text(error_label, "No HTML files found on SD card");
+        lv_obj_set_style_text_font(error_label, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(error_label, COLOR_MATERIAL_RED, 0);
+        
+        // Close button
+        lv_obj_t *close_btn = lv_btn_create(karma_html_popup_obj);
+        lv_obj_set_size(close_btn, 100, 40);
+        lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x333333), 0);
+        lv_obj_set_style_radius(close_btn, 8, 0);
+        lv_obj_add_event_cb(close_btn, karma_html_popup_close_cb, LV_EVENT_CLICKED, NULL);
+        
+        lv_obj_t *close_label = lv_label_create(close_btn);
+        lv_label_set_text(close_label, "Close");
+        lv_obj_center(close_label);
+        return;
+    }
+    
+    // SSID info
+    lv_obj_t *ssid_label = lv_label_create(karma_html_popup_obj);
+    lv_label_set_text_fmt(ssid_label, "Target: %s", karma_probes[idx].ssid);
+    lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xCCCCCC), 0);
+    
+    // HTML dropdown
+    karma_html_dropdown = lv_dropdown_create(karma_html_popup_obj);
+    lv_obj_set_width(karma_html_dropdown, 350);
+    
+    char options[2048] = "";
+    for (int i = 0; i < karma_html_count; i++) {
+        if (i > 0) strncat(options, "\n", sizeof(options) - strlen(options) - 1);
+        strncat(options, karma_html_files[i], sizeof(options) - strlen(options) - 1);
+    }
+    lv_dropdown_set_options(karma_html_dropdown, options);
+    lv_obj_set_style_bg_color(karma_html_dropdown, lv_color_hex(0x252525), 0);
+    lv_obj_set_style_text_color(karma_html_dropdown, lv_color_hex(0xFFFFFF), 0);
+    
+    // Buttons row
+    lv_obj_t *btn_row = lv_obj_create(karma_html_popup_obj);
+    lv_obj_set_size(btn_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btn_row, 20, 0);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Cancel button
+    lv_obj_t *cancel_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(cancel_btn, 100, 40);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(cancel_btn, 8, 0);
+    lv_obj_add_event_cb(cancel_btn, karma_html_popup_close_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *cancel_label = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_label, "Cancel");
+    lv_obj_center(cancel_label);
+    
+    // Start button
+    lv_obj_t *start_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(start_btn, 120, 40);
+    lv_obj_set_style_bg_color(start_btn, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_radius(start_btn, 8, 0);
+    lv_obj_add_event_cb(start_btn, karma_html_select_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *start_label = lv_label_create(start_btn);
+    lv_label_set_text(start_label, "Start Karma");
+    lv_obj_center(start_label);
+}
+
+// HTML popup close callback
+static void karma_html_popup_close_cb(lv_event_t *e)
+{
+    (void)e;
+    if (karma_html_popup_overlay) {
+        lv_obj_del(karma_html_popup_overlay);
+        karma_html_popup_overlay = NULL;
+        karma_html_popup_obj = NULL;
+        karma_html_dropdown = NULL;
+    }
+}
+
+// HTML select callback - start karma attack
+static void karma_html_select_cb(lv_event_t *e)
+{
+    (void)e;
+    
+    if (!karma_html_dropdown || karma_selected_probe_idx < 0) return;
+    
+    int html_idx = lv_dropdown_get_selected(karma_html_dropdown);
+    int probe_idx = karma_probes[karma_selected_probe_idx].index;
+    
+    ESP_LOGI(TAG, "Karma: Starting attack - probe %d, html %d", probe_idx, html_idx);
+    
+    // Close HTML popup
+    if (karma_html_popup_overlay) {
+        lv_obj_del(karma_html_popup_overlay);
+        karma_html_popup_overlay = NULL;
+        karma_html_popup_obj = NULL;
+        karma_html_dropdown = NULL;
+    }
+    
+    // Stop any running operation first
+    uart_send_command("stop");
+    vTaskDelay(pdMS_TO_TICKS(200));
+    
+    // Send select_html command (1-based index)
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "select_html %d", html_idx + 1);
+    uart_send_command(cmd);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    
+    // Send start_karma command
+    snprintf(cmd, sizeof(cmd), "start_karma %d", probe_idx);
+    uart_send_command(cmd);
+    
+    // Create attack popup
+    lv_obj_t *scr = lv_scr_act();
+    
+    karma_attack_popup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(karma_attack_popup_overlay);
+    lv_obj_set_size(karma_attack_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(karma_attack_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(karma_attack_popup_overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(karma_attack_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(karma_attack_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
+    
+    karma_attack_popup_obj = lv_obj_create(karma_attack_popup_overlay);
+    lv_obj_set_size(karma_attack_popup_obj, 500, 350);
+    lv_obj_center(karma_attack_popup_obj);
+    lv_obj_set_style_bg_color(karma_attack_popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_border_color(karma_attack_popup_obj, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_border_width(karma_attack_popup_obj, 3, 0);
+    lv_obj_set_style_radius(karma_attack_popup_obj, 16, 0);
+    lv_obj_set_style_pad_all(karma_attack_popup_obj, 25, 0);
+    lv_obj_set_flex_flow(karma_attack_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(karma_attack_popup_obj, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(karma_attack_popup_obj, 12, 0);
+    lv_obj_clear_flag(karma_attack_popup_obj, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(karma_attack_popup_obj);
+    lv_label_set_text(title, LV_SYMBOL_WIFI " Karma Attack Active");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_ORANGE, 0);
+    
+    // SSID label
+    karma_attack_ssid_label = lv_label_create(karma_attack_popup_obj);
+    lv_label_set_text(karma_attack_ssid_label, "Starting portal...");
+    lv_obj_set_style_text_font(karma_attack_ssid_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(karma_attack_ssid_label, lv_color_hex(0xCCCCCC), 0);
+    
+    // MAC label
+    karma_attack_mac_label = lv_label_create(karma_attack_popup_obj);
+    lv_label_set_text(karma_attack_mac_label, "Waiting for clients...");
+    lv_obj_set_style_text_font(karma_attack_mac_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(karma_attack_mac_label, lv_color_hex(0x888888), 0);
+    
+    // Password label
+    karma_attack_password_label = lv_label_create(karma_attack_popup_obj);
+    lv_label_set_text(karma_attack_password_label, "");
+    lv_obj_set_style_text_font(karma_attack_password_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(karma_attack_password_label, COLOR_MATERIAL_GREEN, 0);
+    
+    // Stop button
+    lv_obj_t *stop_btn = lv_btn_create(karma_attack_popup_obj);
+    lv_obj_set_size(stop_btn, 140, 50);
+    lv_obj_set_style_bg_color(stop_btn, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_radius(stop_btn, 10, 0);
+    lv_obj_add_event_cb(stop_btn, karma_attack_popup_close_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *stop_label = lv_label_create(stop_btn);
+    lv_label_set_text(stop_label, "STOP");
+    lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_18, 0);
+    lv_obj_center(stop_label);
+    
+    // Start monitoring task
+    karma_monitoring = true;
+    xTaskCreate(karma_monitor_task, "karma_mon", 4096, NULL, 5, &karma_monitor_task_handle);
+}
+
+// Karma attack popup close callback
+static void karma_attack_popup_close_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Karma: Stopping attack");
+    
+    // Stop monitoring
+    karma_monitoring = false;
+    if (karma_monitor_task_handle != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        karma_monitor_task_handle = NULL;
+    }
+    
+    // Send stop command
+    uart_send_command("stop");
+    
+    // Close popup
+    if (karma_attack_popup_overlay) {
+        lv_obj_del(karma_attack_popup_overlay);
+        karma_attack_popup_overlay = NULL;
+        karma_attack_popup_obj = NULL;
+        karma_attack_ssid_label = NULL;
+        karma_attack_mac_label = NULL;
+        karma_attack_password_label = NULL;
+    }
+}
+
+// Karma monitor task - watches for portal status, client connect, password
+static void karma_monitor_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "Karma monitor task started");
+    
+    static char rx_buffer[256];
+    static char line_buffer[256];
+    int line_pos = 0;
+    
+    while (karma_monitoring) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            
+            for (int i = 0; i < len; i++) {
+                char c = rx_buffer[i];
+                
+                if (c == '\n' || c == '\r') {
+                    if (line_pos > 0) {
+                        line_buffer[line_pos] = '\0';
+                        ESP_LOGI(TAG, "Karma UART: %s", line_buffer);
+                        
+                        // Check for portal started
+                        char *ap_name = strstr(line_buffer, "AP Name:");
+                        if (ap_name != NULL) {
+                            ap_name += 8;
+                            while (*ap_name == ' ') ap_name++;
+                            
+                            bsp_display_lock(0);
+                            if (karma_attack_ssid_label) {
+                                lv_label_set_text_fmt(karma_attack_ssid_label, "Portal started: %s", ap_name);
+                                lv_obj_set_style_text_color(karma_attack_ssid_label, COLOR_MATERIAL_GREEN, 0);
+                            }
+                            bsp_display_unlock();
+                        }
+                        
+                        // Check for client connected
+                        char *mac_ptr = strstr(line_buffer, "Client connected - MAC:");
+                        if (mac_ptr != NULL) {
+                            mac_ptr += 23;
+                            while (*mac_ptr == ' ') mac_ptr++;
+                            
+                            char mac[20] = {0};
+                            int j = 0;
+                            while (mac_ptr[j] && mac_ptr[j] != ' ' && mac_ptr[j] != '\n' && j < 17) {
+                                mac[j] = mac_ptr[j];
+                                j++;
+                            }
+                            mac[j] = '\0';
+                            
+                            bsp_display_lock(0);
+                            if (karma_attack_mac_label) {
+                                lv_label_set_text_fmt(karma_attack_mac_label, "Last MAC connected: %s", mac);
+                                lv_obj_set_style_text_color(karma_attack_mac_label, COLOR_MATERIAL_CYAN, 0);
+                            }
+                            bsp_display_unlock();
+                        }
+                        
+                        // Check for password
+                        char *pass_ptr = strstr(line_buffer, "Password:");
+                        if (pass_ptr != NULL) {
+                            pass_ptr += 9;
+                            while (*pass_ptr == ' ') pass_ptr++;
+                            
+                            // Trim trailing whitespace
+                            char pass[64] = {0};
+                            strncpy(pass, pass_ptr, sizeof(pass) - 1);
+                            size_t pass_len = strlen(pass);
+                            while (pass_len > 0 && isspace((unsigned char)pass[pass_len - 1])) {
+                                pass[--pass_len] = '\0';
+                            }
+                            
+                            if (strlen(pass) > 0) {
+                                bsp_display_lock(0);
+                                if (karma_attack_password_label) {
+                                    lv_label_set_text_fmt(karma_attack_password_label, "Password obtained: %s", pass);
+                                }
+                                bsp_display_unlock();
+                            }
+                        }
+                        
+                        line_pos = 0;
+                    }
+                } else if (line_pos < (int)sizeof(line_buffer) - 1) {
+                    line_buffer[line_pos++] = c;
+                }
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    
+    ESP_LOGI(TAG, "Karma monitor task ended");
+    karma_monitor_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+// Show Karma page
+static void show_karma_page(void)
+{
+    ESP_LOGI(TAG, "Showing Karma page");
+    
+    // Reset state
+    karma_probe_count = 0;
+    karma_selected_probe_idx = -1;
+    
+    // Delete main tiles if present
+    if (tiles_container) {
+        lv_obj_del(tiles_container);
+        tiles_container = NULL;
+    }
+    
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A1A), 0);
+    
+    create_status_bar();
+    update_kraken_eye_icon();
+    
+    karma_page = lv_obj_create(scr);
+    lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
+    lv_obj_set_size(karma_page, lv_pct(100), scr_height - 40);
+    lv_obj_align(karma_page, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_bg_color(karma_page, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_border_width(karma_page, 0, 0);
+    lv_obj_set_style_pad_all(karma_page, 15, 0);
+    lv_obj_set_flex_flow(karma_page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(karma_page, 10, 0);
+    
+    // Header
+    lv_obj_t *header = lv_obj_create(karma_page);
+    lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_set_style_pad_all(header, 0, 0);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(header, 15, 0);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Back button
+    lv_obj_t *back_btn = lv_btn_create(header);
+    lv_obj_set_size(back_btn, 48, 40);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(back_btn, 8, 0);
+    lv_obj_add_event_cb(back_btn, karma_back_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *back_icon = lv_label_create(back_btn);
+    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(back_icon, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(back_icon);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "Karma Attack");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_ORANGE, 0);
+    
+    // Button bar
+    lv_obj_t *btn_bar = lv_obj_create(karma_page);
+    lv_obj_set_size(btn_bar, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_bar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_bar, 0, 0);
+    lv_obj_set_style_pad_all(btn_bar, 0, 0);
+    lv_obj_set_flex_flow(btn_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btn_bar, 15, 0);
+    lv_obj_clear_flag(btn_bar, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Start Sniffer button
+    karma_start_sniffer_btn = lv_btn_create(btn_bar);
+    lv_obj_set_size(karma_start_sniffer_btn, 130, 45);
+    lv_obj_set_style_bg_color(karma_start_sniffer_btn, COLOR_MATERIAL_GREEN, 0);
+    lv_obj_set_style_bg_color(karma_start_sniffer_btn, lv_color_hex(0x555555), LV_STATE_DISABLED);
+    lv_obj_set_style_radius(karma_start_sniffer_btn, 8, 0);
+    lv_obj_add_event_cb(karma_start_sniffer_btn, karma_start_sniffer_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *start_label = lv_label_create(karma_start_sniffer_btn);
+    lv_label_set_text(start_label, "Start Sniffer");
+    lv_obj_set_style_text_font(start_label, &lv_font_montserrat_14, 0);
+    lv_obj_center(start_label);
+    
+    // Stop Sniffer button
+    karma_stop_sniffer_btn = lv_btn_create(btn_bar);
+    lv_obj_set_size(karma_stop_sniffer_btn, 130, 45);
+    lv_obj_set_style_bg_color(karma_stop_sniffer_btn, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_bg_color(karma_stop_sniffer_btn, lv_color_hex(0x555555), LV_STATE_DISABLED);
+    lv_obj_set_style_radius(karma_stop_sniffer_btn, 8, 0);
+    lv_obj_add_event_cb(karma_stop_sniffer_btn, karma_stop_sniffer_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *stop_label = lv_label_create(karma_stop_sniffer_btn);
+    lv_label_set_text(stop_label, "Stop Sniffer");
+    lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_14, 0);
+    lv_obj_center(stop_label);
+    
+    // Initially: Start enabled, Stop disabled (sniffer not running)
+    karma_sniffer_running = false;
+    lv_obj_add_state(karma_stop_sniffer_btn, LV_STATE_DISABLED);
+    
+    // Show Probes button
+    lv_obj_t *probes_btn = lv_btn_create(btn_bar);
+    lv_obj_set_size(probes_btn, 130, 45);
+    lv_obj_set_style_bg_color(probes_btn, COLOR_MATERIAL_CYAN, 0);
+    lv_obj_set_style_radius(probes_btn, 8, 0);
+    lv_obj_add_event_cb(probes_btn, karma_show_probes_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *probes_label = lv_label_create(probes_btn);
+    lv_label_set_text(probes_label, "Show Probes");
+    lv_obj_set_style_text_font(probes_label, &lv_font_montserrat_14, 0);
+    lv_obj_center(probes_label);
+    
+    // Status label
+    karma_status_label = lv_label_create(karma_page);
+    lv_label_set_text(karma_status_label, "Start sniffer to collect probe requests");
+    lv_obj_set_style_text_font(karma_status_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(karma_status_label, lv_color_hex(0x888888), 0);
+    
+    // Probes container (scrollable)
+    karma_probes_container = lv_obj_create(karma_page);
+    lv_obj_set_size(karma_probes_container, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(karma_probes_container, 1);
+    lv_obj_set_style_bg_color(karma_probes_container, lv_color_hex(0x252525), 0);
+    lv_obj_set_style_border_width(karma_probes_container, 0, 0);
+    lv_obj_set_style_radius(karma_probes_container, 8, 0);
+    lv_obj_set_style_pad_all(karma_probes_container, 10, 0);
+    lv_obj_set_flex_flow(karma_probes_container, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(karma_probes_container, 6, 0);
+    
+    lv_obj_t *placeholder = lv_label_create(karma_probes_container);
+    lv_label_set_text(placeholder, "Click 'Show Probes' after sniffing to see collected probe requests");
+    lv_obj_set_style_text_font(placeholder, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(placeholder, lv_color_hex(0x666666), 0);
+}
+
 // ======================= Evil Twin Attack Functions =======================
 
 // Fetch HTML files list from SD card via UART
@@ -2971,7 +3785,8 @@ static void show_main_tiles(void)
     create_tile(tiles_container, LV_SYMBOL_BLUETOOTH, "Bluetooth", COLOR_MATERIAL_CYAN, main_tile_event_cb, "Bluetooth");
     create_tile(tiles_container, LV_SYMBOL_LOOP, "Network\nObserver", COLOR_MATERIAL_TEAL, main_tile_event_cb, "Network Observer");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS, "Settings", COLOR_MATERIAL_PURPLE, main_tile_event_cb, "Settings");
-    create_tile(tiles_container, LV_SYMBOL_CHARGE, "Internal\nC6 Test", lv_color_make(255, 87, 34), main_tile_event_cb, "Internal C6 Test");  // Deep Orange
+    create_tile(tiles_container, LV_SYMBOL_WIFI, "Karma", COLOR_MATERIAL_ORANGE, main_tile_event_cb, "Karma");
+    // Hidden: create_tile(tiles_container, LV_SYMBOL_CHARGE, "Internal\nC6 Test", lv_color_make(255, 87, 34), main_tile_event_cb, "Internal C6 Test");
 }
 
 // Show WiFi Scanner page with Back button
