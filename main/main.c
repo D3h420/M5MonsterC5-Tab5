@@ -41,15 +41,15 @@ static const char *TAG = "wifi_scanner";
 
 // UART Configuration for ESP32C5 communication
 // Note: TX/RX pins are configured dynamically via get_uart_pins() based on NVS settings
-// M5Bus (default): TX=38, RX=37 | Grove: TX=53, RX=54
+// M5Bus (default): TX=37, RX=38 | Grove: TX=53, RX=54
 #define UART_NUM          UART_NUM_1
 #define UART_BAUD_RATE    115200
 #define UART_BUF_SIZE     4096
 #define UART_RX_TIMEOUT   30000  // 30 seconds timeout for scan
 
 // ESP Modem configuration (configurable pins for future external ESP32C5)
-#define ESP_MODEM_UART_TX_PIN  GPIO_NUM_38
-#define ESP_MODEM_UART_RX_PIN  GPIO_NUM_37
+#define ESP_MODEM_UART_TX_PIN  GPIO_NUM_37
+#define ESP_MODEM_UART_RX_PIN  GPIO_NUM_38
 
 // ESP Modem scan settings
 #define ESP_MODEM_MAX_NETWORKS  50
@@ -490,7 +490,7 @@ static lv_obj_t *settings_page = NULL;
 
 // Settings state - Dual UART configuration
 static uint8_t hw_config = 0;         // 0=Monster (single UART), 1=Kraken (dual UART)
-static uint8_t uart1_pins_mode = 1;   // 0=M5Bus(38/37), 1=Grove(53/54) - default Grove
+static uint8_t uart1_pins_mode = 1;   // 0=M5Bus(37/38), 1=Grove(53/54) - default Grove
 
 // UART2 for Kraken mode
 #define UART2_NUM UART_NUM_2
@@ -11834,8 +11834,8 @@ static void get_uart1_pins(uint8_t mode, int *tx_pin, int *rx_pin)
 {
     if (mode == 0) {
         // M5Bus
-        *tx_pin = 38;
-        *rx_pin = 37;
+        *tx_pin = 37;
+        *rx_pin = 38;
     } else {
         // Grove
         *tx_pin = 53;
@@ -11852,8 +11852,8 @@ static void get_uart2_pins(uint8_t uart1_mode, int *tx_pin, int *rx_pin)
         *rx_pin = 54;
     } else {
         // UART1 is Grove, so UART2 is M5Bus
-        *tx_pin = 38;
-        *rx_pin = 37;
+        *tx_pin = 37;
+        *rx_pin = 38;
     }
 }
 
@@ -12269,7 +12269,7 @@ static void update_uart2_info_label(void)
         // Kraken mode - show UART2 on opposite pins
         bool grove_selected = uart_radio_grove && lv_obj_has_state(uart_radio_grove, LV_STATE_CHECKED);
         if (grove_selected) {
-            lv_label_set_text(uart2_info_label, "Kraken enables UART2 on: M5Bus (TX:38, RX:37)");
+            lv_label_set_text(uart2_info_label, "Kraken enables UART2 on: M5Bus (TX:37, RX:38)");
         } else {
             lv_label_set_text(uart2_info_label, "Kraken enables UART2 on: Grove (TX:53, RX:54)");
         }
@@ -12660,7 +12660,7 @@ static void show_uart_pins_popup(void)
     lv_obj_add_event_cb(uart_radio_m5bus, uart_radio_event_cb, LV_EVENT_CLICKED, NULL);
     
     lv_obj_t *m5bus_label = lv_label_create(m5bus_row);
-    lv_label_set_text(m5bus_label, "M5Bus (TX:38, RX:37)");
+    lv_label_set_text(m5bus_label, "M5Bus (TX:37, RX:38)");
     lv_obj_set_style_text_font(m5bus_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(m5bus_label, lv_color_hex(0xFFFFFF), 0);
     
