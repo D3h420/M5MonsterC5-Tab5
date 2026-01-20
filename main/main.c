@@ -653,28 +653,12 @@ static void restore_tab_context_to_globals(tab_context_t *ctx) {
         ESP_LOGI(TAG, "Skipping scan results restore - scan in progress");
     }
     
-    // Restore observer results (only if observer is NOT running on another tab)
-    // Check if observer is running on a DIFFERENT tab than we're switching TO
-    bool observer_on_other_tab = false;
-    if (observer_running) {
-        // Observer is running - check if it's on a different tab
-        if ((ctx == &uart1_ctx && uart2_ctx.observer_running) ||
-            (ctx == &uart2_ctx && uart1_ctx.observer_running)) {
-            observer_on_other_tab = true;
-        }
-    }
-    
-    if (!observer_on_other_tab && !observer_running) {
-        if (ctx->observer_networks && ctx->observer_network_count > 0) {
-            memcpy(observer_networks, ctx->observer_networks, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
-            observer_network_count = ctx->observer_network_count;
-            ESP_LOGI(TAG, "Restored %d observer results from context to globals", observer_network_count);
-        } else {
-            observer_network_count = 0;
-        }
-    } else {
-        ESP_LOGI(TAG, "Skipping observer restore - observer running on another tab");
-    }
+    // Observer now uses ctx-> directly, no need to restore globals
+    // Each tab has its own independent observer data in ctx->observer_networks
+    ESP_LOGI(TAG, "Tab %d observer_running=%d, network_count=%d", 
+             (ctx == &uart1_ctx) ? 0 : 1, 
+             ctx->observer_running, 
+             ctx->observer_network_count);
     
 }
 
@@ -691,11 +675,7 @@ static void save_globals_to_tab_context(tab_context_t *ctx) {
         ESP_LOGI(TAG, "Saved %d scan results (%d selected) from globals to context", network_count, selected_network_count);
     }
     
-    // Save observer results
-    if (ctx->observer_networks) {
-        memcpy(ctx->observer_networks, observer_networks, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
-        ctx->observer_network_count = observer_network_count;
-    }
+    // Observer now uses ctx-> directly, no need to copy from globals
 }
 
 // ESP Modem global variables
@@ -985,7 +965,7 @@ static void close_network_popup(void);
 static void show_deauth_popup(int network_idx, int client_idx);
 static void close_deauth_popup(void);
 static void deauth_btn_click_cb(lv_event_t *e);
-static void update_observer_table(void);
+static void update_observer_table(tab_context_t *ctx);
 static bool parse_sniffer_network_line(const char *line, observer_network_t *net);
 static bool parse_sniffer_client_line(const char *line, char *mac_out, size_t mac_size);
 static void show_scan_deauth_popup(void);
@@ -4529,6 +4509,11 @@ static void evil_twin_monitor_task(void *arg)
 {
     // Get context passed to task
     tab_context_t *ctx = (tab_context_t *)arg;
+    if (!ctx) {
+        ESP_LOGE(TAG, "Evil Twin monitor task: NULL context!");
+        vTaskDelete(NULL);
+        return;
+    }
     
     // Determine UART from context
     int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
@@ -4541,8 +4526,8 @@ static void evil_twin_monitor_task(void *arg)
     
     ESP_LOGI(TAG, "[%s] Evil Twin monitor task started for tab %d", uart_name, task_tab);
     
-    // Use global for now (could use ctx field if added to tab_context_t)
-    while (evil_twin_monitoring) {
+    // Use context field instead of global
+    while (ctx->evil_twin_monitoring) {
         int len = uart_read_bytes(uart_port, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(200));
         
         if (len > 0) {
@@ -4558,7 +4543,7 @@ static void evil_twin_monitor_task(void *arg)
                         
                         // Look for client connection: "Client connected - MAC: XX:XX:XX:XX:XX:XX"
                         char *client_connected = strstr(line_buffer, "Client connected - MAC:");
-                        if (client_connected && evil_twin_status_label) {
+                        if (client_connected && ctx->evil_twin_status_label) {
                             // Extract MAC address
                             char mac[20] = {0};
                             char *mac_start = client_connected + 24;  // Skip "Client connected - MAC: "
@@ -4574,8 +4559,8 @@ static void evil_twin_monitor_task(void *arg)
                                 "Client connected!\n\n"
                                 "MAC: %s\n\n"
                                 "Waiting for password...", mac);
-                            lv_label_set_text(evil_twin_status_label, status_text);
-                            lv_obj_set_style_text_color(evil_twin_status_label, COLOR_MATERIAL_AMBER, 0);
+                            lv_label_set_text(ctx->evil_twin_status_label, status_text);
+                            lv_obj_set_style_text_color(ctx->evil_twin_status_label, COLOR_MATERIAL_AMBER, 0);
                         }
                         
                         // Look for password capture pattern:
@@ -4609,27 +4594,22 @@ static void evil_twin_monitor_task(void *arg)
                             if (pwd_len > 127) pwd_len = 127;
                             strncpy(captured_pwd, pwd_start, pwd_len);
                             
-                            ESP_LOGI(TAG, "[UART1] PASSWORD CAPTURED! SSID: %s, Password: %s", captured_ssid, captured_pwd);
+                            ESP_LOGI(TAG, "[%s] PASSWORD CAPTURED! SSID: %s, Password: %s", uart_name, captured_ssid, captured_pwd);
                             
                             // Update UI on main thread
-                            if (evil_twin_status_label) {
+                            if (ctx->evil_twin_status_label) {
                                 char result_text[512];
                                 snprintf(result_text, sizeof(result_text),
                                     "PASSWORD CAPTURED!\n\n"
                                     "SSID: %s\n"
                                     "Password: %s",
                                     captured_ssid, captured_pwd);
-                                lv_label_set_text(evil_twin_status_label, result_text);
-                                lv_obj_set_style_text_color(evil_twin_status_label, COLOR_MATERIAL_GREEN, 0);
+                                lv_label_set_text(ctx->evil_twin_status_label, result_text);
+                                lv_obj_set_style_text_color(ctx->evil_twin_status_label, COLOR_MATERIAL_GREEN, 0);
                             }
                             
-                            // Show close button
-                            if (evil_twin_close_btn) {
-                                lv_obj_clear_flag(evil_twin_close_btn, LV_OBJ_FLAG_HIDDEN);
-                            }
-                            
-                            // Stop monitoring
-                            evil_twin_monitoring = false;
+                            // Stop monitoring in context
+                            ctx->evil_twin_monitoring = false;
                             break;
                         }
                         
@@ -4654,13 +4634,20 @@ static void evil_twin_start_cb(lv_event_t *e)
 {
     (void)e;
     
-    if (!evil_twin_network_dropdown || !evil_twin_html_dropdown) return;
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
+    
+    // Use dropdowns from context instead of globals
+    if (!ctx->evil_twin_network_dropdown || !ctx->evil_twin_html_dropdown) {
+        ESP_LOGW(TAG, "Evil Twin dropdowns not initialized");
+        return;
+    }
     
     // Get selected network index from dropdown
-    int selected_dropdown_idx = lv_dropdown_get_selected(evil_twin_network_dropdown);
+    int selected_dropdown_idx = lv_dropdown_get_selected(ctx->evil_twin_network_dropdown);
     
     // Get selected HTML file index from dropdown
-    int selected_html_idx = lv_dropdown_get_selected(evil_twin_html_dropdown);
+    int selected_html_idx = lv_dropdown_get_selected(ctx->evil_twin_html_dropdown);
     
     if (selected_dropdown_idx < 0 || selected_dropdown_idx >= selected_network_count) {
         ESP_LOGW(TAG, "Invalid network selection");
@@ -4728,15 +4715,14 @@ static void evil_twin_start_cb(lv_event_t *e)
         "Waiting for victim to connect...",
         et_ssid, html_file);
     
-    if (evil_twin_status_label) {
-        lv_label_set_text(evil_twin_status_label, status_text);
+    // Update status label in context (not global)
+    if (ctx->evil_twin_status_label) {
+        lv_label_set_text(ctx->evil_twin_status_label, status_text);
     }
     
     // Start monitoring task
     evil_twin_monitoring = true;
-    
-    // Also mark in context (if field exists)
-    tab_context_t *ctx = get_current_ctx();
+    ctx->evil_twin_monitoring = true;
     
     xTaskCreate(evil_twin_monitor_task, "et_monitor", 4096, (void*)ctx, 5, &evil_twin_monitor_task_handle);
 }
@@ -4923,7 +4909,7 @@ static void show_evil_twin_popup(void)
     lv_obj_center(et_close_label);
     
     // STOP button (always visible - sends stop command and closes popup)
-    lv_obj_t *stop_btn = lv_btn_create(evil_twin_popup_obj);
+    lv_obj_t *stop_btn = lv_btn_create(ctx->evil_twin_popup);  // Use ctx->evil_twin_popup!
     lv_obj_set_size(stop_btn, lv_pct(100), 50);
     lv_obj_set_style_bg_color(stop_btn, COLOR_MATERIAL_RED, 0);
     lv_obj_set_style_bg_color(stop_btn, lv_color_hex(0xB71C1C), LV_STATE_PRESSED);
@@ -5265,20 +5251,23 @@ static void popup_timer_callback(TimerHandle_t xTimer)
 {
     (void)xTimer;
     
-    if (!popup_open || !observer_running) return;
+    tab_context_t *ctx = get_current_ctx();
+    if (!popup_open || !ctx || !ctx->observer_running) return;
     
     // Only start new poll if previous one finished
     if (observer_task_handle == NULL) {
-        xTaskCreate(popup_poll_task, "popup_poll", 8192, NULL, 5, &observer_task_handle);
+        xTaskCreate(popup_poll_task, "popup_poll", 8192, (void*)ctx, 5, &observer_task_handle);
     }
 }
 
 // Update popup content with current network data
 static void update_popup_content(void)
 {
-    if (!popup_obj || popup_network_idx < 0 || popup_network_idx >= observer_network_count) return;
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
+    if (!popup_obj || popup_network_idx < 0 || popup_network_idx >= ctx->observer_network_count) return;
     
-    observer_network_t *net = &observer_networks[popup_network_idx];
+    observer_network_t *net = &ctx->observer_networks[popup_network_idx];
     
     // Update clients container
     if (popup_clients_container) {
@@ -5337,34 +5326,40 @@ static void close_network_popup(void)
     popup_open = false;
     popup_network_idx = -1;
     
-    // Restart main observer timer (20s)
-    if (observer_timer != NULL && observer_running) {
-        xTimerStart(observer_timer, 0);
-        ESP_LOGI(TAG, "Resumed main observer timer (20s)");
-    }
-    
-    // Refresh main table
-    if (observer_table) {
-        update_observer_table();
+    // Refresh main table and restart timer
+    tab_context_t *ctx = get_current_ctx();
+    if (ctx) {
+        // Restart main observer timer (20s) for this context
+        if (ctx->observer_timer != NULL && ctx->observer_running) {
+            xTimerStart(ctx->observer_timer, 0);
+            ESP_LOGI(TAG, "Resumed observer timer for tab %d (20s)", current_tab);
+        }
+        
+        if (ctx->observer_table) {
+            update_observer_table(ctx);
+        }
     }
 }
 
 // Show network popup for detailed view
 static void show_network_popup(int network_idx)
 {
-    if (network_idx < 0 || network_idx >= observer_network_count) return;
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
+    
+    if (network_idx < 0 || network_idx >= ctx->observer_network_count) return;
     if (popup_open) return;  // Already showing a popup
     
-    observer_network_t *net = &observer_networks[network_idx];
+    observer_network_t *net = &ctx->observer_networks[network_idx];
     ESP_LOGI(TAG, "Opening popup for network: %s (scan_index=%d)", net->ssid, net->scan_index);
     
     popup_open = true;
     popup_network_idx = network_idx;
     
-    // Stop main observer timer
-    if (observer_timer != NULL) {
-        xTimerStop(observer_timer, 0);
-        ESP_LOGI(TAG, "Stopped main observer timer");
+    // Stop main observer timer for this context
+    if (ctx->observer_timer != NULL) {
+        xTimerStop(ctx->observer_timer, 0);
+        ESP_LOGI(TAG, "Stopped observer timer for tab %d", current_tab);
     }
     
     // Send commands to focus on this network
@@ -5530,20 +5525,30 @@ static bool add_client_mac(observer_network_t *net, const char *mac)
 // Popup poll task - similar to observer_poll_task but updates popup content
 static void popup_poll_task(void *arg)
 {
+    tab_context_t *ctx = (tab_context_t *)arg;
+    if (!ctx) {
+        ESP_LOGE(TAG, "Popup poll task: NULL context!");
+        observer_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+    
     ESP_LOGI(TAG, "Popup poll task started for network idx %d", popup_network_idx);
     
-    if (!observer_rx_buffer || !observer_line_buffer || !observer_networks) {
+    if (!observer_rx_buffer || !observer_line_buffer || !ctx->observer_networks) {
         ESP_LOGE(TAG, "PSRAM buffers not allocated!");
         observer_task_handle = NULL;
         vTaskDelete(NULL);
         return;
     }
     
-    // Use UART based on current tab
-    uart_port_t uart_port = get_current_uart();
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
+    uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
     
     uart_flush(uart_port);
-    uart_send_command_for_tab("show_sniffer_results");
+    char cmd[] = "show_sniffer_results\r\n";
+    uart_write_bytes(uart_port, cmd, strlen(cmd));
     
     char *rx_buffer = observer_rx_buffer;
     char *line_buffer = observer_line_buffer;
@@ -5576,8 +5581,8 @@ static void popup_poll_task(void *arg)
                             if (parse_sniffer_network_line(line_buffer, &parsed_net)) {
                                 // Find this network in our existing list by SSID
                                 current_network_idx = -1;
-                                for (int n = 0; n < observer_network_count; n++) {
-                                    if (strcmp(observer_networks[n].ssid, parsed_net.ssid) == 0) {
+                                for (int n = 0; n < ctx->observer_network_count; n++) {
+                                    if (strcmp(ctx->observer_networks[n].ssid, parsed_net.ssid) == 0) {
                                         current_network_idx = n;
                                         // Don't overwrite client_count - we track it via add_client_mac
                                         break;
@@ -5589,7 +5594,7 @@ static void popup_poll_task(void *arg)
                         }
                         // Check for client MAC line (starts with space)
                         else if ((line_buffer[0] == ' ' || line_buffer[0] == '\t') && current_network_idx >= 0) {
-                            observer_network_t *net = &observer_networks[current_network_idx];
+                            observer_network_t *net = &ctx->observer_networks[current_network_idx];
                             char mac[18];
                             if (parse_sniffer_client_line(line_buffer, mac, sizeof(mac))) {
                                 // Add client if not already present (accumulate)
@@ -5626,20 +5631,20 @@ static void popup_poll_task(void *arg)
 }
 
 // Update observer table UI with current data
-static void update_observer_table(void)
+static void update_observer_table(tab_context_t *ctx)
 {
-    if (!observer_table) return;
+    if (!ctx || !ctx->observer_table || !ctx->observer_networks) return;
     
     // Save current scroll position before cleaning
-    lv_coord_t scroll_y = lv_obj_get_scroll_y(observer_table);
+    lv_coord_t scroll_y = lv_obj_get_scroll_y(ctx->observer_table);
     
-    lv_obj_clean(observer_table);
+    lv_obj_clean(ctx->observer_table);
     
-    for (int i = 0; i < observer_network_count; i++) {
-        observer_network_t *net = &observer_networks[i];
+    for (int i = 0; i < ctx->observer_network_count; i++) {
+        observer_network_t *net = &ctx->observer_networks[i];
         
         // Create network row (darker background, clickable) - 2 lines like WiFi Scanner
-        lv_obj_t *net_row = lv_obj_create(observer_table);
+        lv_obj_t *net_row = lv_obj_create(ctx->observer_table);
         lv_obj_set_size(net_row, lv_pct(100), LV_SIZE_CONTENT);
         lv_obj_set_style_pad_all(net_row, 8, 0);
         lv_obj_set_style_bg_color(net_row, lv_color_hex(0x2D2D2D), 0);
@@ -5683,7 +5688,7 @@ static void update_observer_table(void)
         for (int j = 0; j < MAX_CLIENTS_PER_NETWORK; j++) {
             if (net->clients[j][0] == '\0') continue;
             
-            lv_obj_t *client_row = lv_obj_create(observer_table);
+            lv_obj_t *client_row = lv_obj_create(ctx->observer_table);
             lv_obj_set_size(client_row, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_pad_all(client_row, 6, 0);
             lv_obj_set_style_pad_left(client_row, 32, 0);  // Indent
@@ -5706,7 +5711,7 @@ static void update_observer_table(void)
     }
     
     // Restore scroll position after rebuild
-    lv_obj_scroll_to_y(observer_table, scroll_y, LV_ANIM_OFF);
+    lv_obj_scroll_to_y(ctx->observer_table, scroll_y, LV_ANIM_OFF);
 }
 
 // Network row click handler
@@ -5715,7 +5720,8 @@ static void network_row_click_cb(lv_event_t *e)
     int network_idx = (int)(intptr_t)lv_event_get_user_data(e);
     ESP_LOGI(TAG, "Network row clicked: index %d", network_idx);
     
-    if (network_idx >= 0 && network_idx < observer_network_count) {
+    tab_context_t *ctx = get_current_ctx();
+    if (ctx && network_idx >= 0 && network_idx < ctx->observer_network_count) {
         show_network_popup(network_idx);
     }
 }
@@ -5738,10 +5744,13 @@ static void client_row_click_cb(lv_event_t *e)
 // Show deauth popup for a specific client
 static void show_deauth_popup(int network_idx, int client_idx)
 {
-    if (network_idx < 0 || network_idx >= observer_network_count) return;
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
+    
+    if (network_idx < 0 || network_idx >= ctx->observer_network_count) return;
     if (deauth_popup_obj != NULL) return;  // Already showing a popup
     
-    observer_network_t *net = &observer_networks[network_idx];
+    observer_network_t *net = &ctx->observer_networks[network_idx];
     if (net->clients[client_idx][0] == '\0') return;
     
     const char *client_mac = net->clients[client_idx];
@@ -5751,10 +5760,10 @@ static void show_deauth_popup(int network_idx, int client_idx)
     deauth_client_idx = client_idx;
     deauth_active = false;  // Not yet deauthing
     
-    // Stop main observer timer
-    if (observer_timer != NULL) {
-        xTimerStop(observer_timer, 0);
-        ESP_LOGI(TAG, "Stopped main observer timer for deauth popup");
+    // Stop main observer timer for this context
+    if (ctx->observer_timer != NULL) {
+        xTimerStop(ctx->observer_timer, 0);
+        ESP_LOGI(TAG, "Stopped observer timer for deauth popup");
     }
     
     // Create popup overlay
@@ -5888,12 +5897,15 @@ static void deauth_btn_click_cb(lv_event_t *e)
     }
     
     // Deauth/Stop button clicked
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
+    
     if (!deauth_active) {
         // Start deauth
-        if (deauth_network_idx >= 0 && deauth_network_idx < observer_network_count &&
+        if (deauth_network_idx >= 0 && deauth_network_idx < ctx->observer_network_count &&
             deauth_client_idx >= 0 && deauth_client_idx < MAX_CLIENTS_PER_NETWORK) {
             
-            observer_network_t *net = &observer_networks[deauth_network_idx];
+            observer_network_t *net = &ctx->observer_networks[deauth_network_idx];
             const char *client_mac = net->clients[deauth_client_idx];
             
             ESP_LOGI(TAG, "Starting deauth: network=%d (scan_idx=%d), client=%s", 
@@ -5985,31 +5997,43 @@ static bool parse_sniffer_client_line(const char *line, char *mac_out, size_t ma
 // Observer poll task - runs show_sniffer_results and parses output
 static void observer_poll_task(void *arg)
 {
-    ESP_LOGI(TAG, "Observer poll task started");
-    
-    // Check if PSRAM buffers are allocated
-    if (!observer_rx_buffer || !observer_line_buffer || !observer_networks) {
-        ESP_LOGE(TAG, "PSRAM buffers not allocated!");
+    tab_context_t *ctx = (tab_context_t *)arg;
+    if (!ctx) {
+        ESP_LOGE(TAG, "Observer poll task: NULL context!");
         observer_task_handle = NULL;
         vTaskDelete(NULL);
         return;
     }
     
-    // Get the UART for current tab
-    uart_port_t uart_port = get_current_uart();
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
+    uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    const char *uart_name = (task_tab == 1) ? "UART2" : "UART1";
+    
+    ESP_LOGI(TAG, "[%s] Observer poll task started", uart_name);
+    
+    // Check if PSRAM buffers are allocated
+    if (!observer_rx_buffer || !observer_line_buffer || !ctx->observer_networks) {
+        ESP_LOGE(TAG, "[%s] PSRAM buffers not allocated!", uart_name);
+        observer_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
     
     // Flush UART buffer
     uart_flush(uart_port);
     
-    // Send show_sniffer_results command
-    uart_send_command_for_tab("show_sniffer_results");
+    // Send show_sniffer_results command to correct UART
+    char cmd[] = "show_sniffer_results\r\n";
+    uart_write_bytes(uart_port, cmd, strlen(cmd));
+    ESP_LOGI(TAG, "[%s] Sent: show_sniffer_results", uart_name);
     
     // Use PSRAM-allocated buffers
     char *rx_buffer = observer_rx_buffer;
     char *line_buffer = observer_line_buffer;
     int line_pos = 0;
     
-    // Track current network being updated (index into observer_networks)
+    // Track current network being updated (index into ctx->observer_networks)
     int current_network_idx = -1;
     
     // DON'T clear client data - accumulate clients over time
@@ -6040,17 +6064,17 @@ static void observer_poll_task(void *arg)
                             if (parse_sniffer_network_line(line_buffer, &parsed_net)) {
                                 // Find this network in our existing list by SSID
                                 current_network_idx = -1;
-                                for (int n = 0; n < observer_network_count; n++) {
-                                    if (strcmp(observer_networks[n].ssid, parsed_net.ssid) == 0) {
+                                for (int n = 0; n < ctx->observer_network_count; n++) {
+                                    if (strcmp(ctx->observer_networks[n].ssid, parsed_net.ssid) == 0) {
                                         current_network_idx = n;
                                         // Don't overwrite client_count - we track it via add_client_mac
-                                        ESP_LOGI(TAG, "  -> Found network '%s' at idx %d (our count: %d)", 
-                                                 parsed_net.ssid, n, observer_networks[n].client_count);
+                                        ESP_LOGI(TAG, "[%s] Found network '%s' at idx %d (count: %d)", 
+                                                 uart_name, parsed_net.ssid, n, ctx->observer_networks[n].client_count);
                                         break;
                                     }
                                 }
                                 if (current_network_idx < 0) {
-                                    ESP_LOGW(TAG, "  -> Network '%s' not in scan list, skipping", parsed_net.ssid);
+                                    ESP_LOGW(TAG, "[%s] Network '%s' not in scan list, skipping", uart_name, parsed_net.ssid);
                                 }
                             } else {
                                 // Not a network line (could be command echo, prompt, etc.)
@@ -6059,7 +6083,7 @@ static void observer_poll_task(void *arg)
                         }
                         // Check for client MAC line (starts with space)
                         else if ((line_buffer[0] == ' ' || line_buffer[0] == '\t') && current_network_idx >= 0) {
-                            observer_network_t *net = &observer_networks[current_network_idx];
+                            observer_network_t *net = &ctx->observer_networks[current_network_idx];
                             char mac[18];
                             if (parse_sniffer_client_line(line_buffer, mac, sizeof(mac))) {
                                 // Add client if not already present (accumulate)
@@ -6080,45 +6104,45 @@ static void observer_poll_task(void *arg)
         }
         
         // Check if observer was stopped
-        if (!observer_running) {
-            ESP_LOGI(TAG, "Observer stopped during poll");
+        if (!ctx->observer_running) {
+            ESP_LOGI(TAG, "[%s] Observer stopped during poll", uart_name);
             break;
         }
     }
     
     // Log summary of parsed data
-    ESP_LOGI(TAG, "=== SNIFFER UPDATE SUMMARY ===");
-    ESP_LOGI(TAG, "Total networks: %d", observer_network_count);
+    ESP_LOGI(TAG, "[%s] === SNIFFER UPDATE SUMMARY ===", uart_name);
+    ESP_LOGI(TAG, "[%s] Total networks: %d", uart_name, ctx->observer_network_count);
     int networks_with_clients = 0;
-    for (int i = 0; i < observer_network_count; i++) {
-        if (observer_networks[i].client_count > 0) {
+    for (int i = 0; i < ctx->observer_network_count; i++) {
+        if (ctx->observer_networks[i].client_count > 0) {
             networks_with_clients++;
-            ESP_LOGI(TAG, "  Network %d: '%s' CH%d clients=%d", 
-                     i, observer_networks[i].ssid, observer_networks[i].channel, observer_networks[i].client_count);
-            for (int j = 0; j < MAX_CLIENTS_PER_NETWORK && observer_networks[i].clients[j][0] != '\0'; j++) {
-                ESP_LOGI(TAG, "    Client %d: %s", j, observer_networks[i].clients[j]);
+            ESP_LOGI(TAG, "[%s] Network %d: '%s' CH%d clients=%d", 
+                     uart_name, i, ctx->observer_networks[i].ssid, ctx->observer_networks[i].channel, ctx->observer_networks[i].client_count);
+            for (int j = 0; j < MAX_CLIENTS_PER_NETWORK && ctx->observer_networks[i].clients[j][0] != '\0'; j++) {
+                ESP_LOGI(TAG, "[%s]   Client %d: %s", uart_name, j, ctx->observer_networks[i].clients[j]);
             }
         }
     }
-    ESP_LOGI(TAG, "Networks with active clients: %d/%d", networks_with_clients, observer_network_count);
-    ESP_LOGI(TAG, "==============================");
+    ESP_LOGI(TAG, "[%s] Networks with clients: %d/%d", uart_name, networks_with_clients, ctx->observer_network_count);
+    ESP_LOGI(TAG, "[%s] ==============================", uart_name);
     
     // Update UI if observer is still running
-    if (observer_running && observer_networks) {
+    if (ctx->observer_running && ctx->observer_networks) {
         
         // Update UI
         bsp_display_lock(0);
         
-        if (observer_status_label) {
-            lv_label_set_text_fmt(observer_status_label, "Found %d networks", observer_network_count);
+        if (ctx->observer_status_label) {
+            lv_label_set_text_fmt(ctx->observer_status_label, "Found %d networks", ctx->observer_network_count);
         }
         
-        update_observer_table();
+        update_observer_table(ctx);
         
         bsp_display_unlock();
     }
     
-    ESP_LOGI(TAG, "Observer poll task finished");
+    ESP_LOGI(TAG, "[%s] Observer poll task finished", uart_name);
     observer_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -6126,13 +6150,13 @@ static void observer_poll_task(void *arg)
 // Timer callback - triggers poll task
 static void observer_timer_callback(TimerHandle_t xTimer)
 {
-    (void)xTimer;
-    
-    if (!observer_running) return;
+    // Get ctx from timer ID
+    tab_context_t *ctx = (tab_context_t *)pvTimerGetTimerID(xTimer);
+    if (!ctx || !ctx->observer_running) return;
     
     // Only start new poll if previous one finished
     if (observer_task_handle == NULL) {
-        xTaskCreate(observer_poll_task, "obs_poll", 8192, NULL, 5, &observer_task_handle);
+        xTaskCreate(observer_poll_task, "obs_poll", 8192, (void*)ctx, 5, &observer_task_handle);
     }
 }
 
@@ -6193,34 +6217,45 @@ static bool parse_scan_to_observer(const char *line, observer_network_t *net)
 
 static void observer_start_task(void *arg)
 {
-    ESP_LOGI(TAG, "Observer start task - scanning networks first");
-    
-    // Check if PSRAM buffers are allocated
-    if (!observer_rx_buffer || !observer_line_buffer || !observer_networks) {
-        ESP_LOGE(TAG, "PSRAM buffers not allocated!");
+    tab_context_t *ctx = (tab_context_t *)arg;
+    if (!ctx) {
+        ESP_LOGE(TAG, "Observer start task: NULL context!");
         vTaskDelete(NULL);
         return;
     }
     
-    // Get the UART for current tab
-    uart_port_t uart_port = get_current_uart();
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
+    uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    const char *uart_name = (task_tab == 1) ? "UART2" : "UART1";
+    
+    ESP_LOGI(TAG, "[%s] Observer start task - scanning networks first", uart_name);
+    
+    // Check if PSRAM buffers are allocated
+    if (!observer_rx_buffer || !observer_line_buffer || !ctx->observer_networks) {
+        ESP_LOGE(TAG, "[%s] PSRAM buffers not allocated!", uart_name);
+        vTaskDelete(NULL);
+        return;
+    }
     
     // Update UI
     bsp_display_lock(0);
-    if (observer_status_label) {
-        lv_label_set_text(observer_status_label, "Scanning networks...");
+    if (ctx->observer_status_label) {
+        lv_label_set_text(ctx->observer_status_label, "Scanning networks...");
     }
     bsp_display_unlock();
     
-    // Clear previous results
-    observer_network_count = 0;
-    memset(observer_networks, 0, sizeof(observer_network_t) * MAX_NETWORKS);
+    // Clear previous results in context
+    ctx->observer_network_count = 0;
+    memset(ctx->observer_networks, 0, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
     
     // Flush UART buffer
     uart_flush(uart_port);
     
     // Step 1: Run scan_networks
-    uart_send_command_for_tab("scan_networks");
+    char scan_cmd[] = "scan_networks\r\n";
+    uart_write_bytes(uart_port, scan_cmd, strlen(scan_cmd));
+    ESP_LOGI(TAG, "[%s] Sent: scan_networks", uart_name);
     
     // Wait for scan to complete - use PSRAM buffers
     char *rx_buffer = observer_rx_buffer;
@@ -6232,7 +6267,7 @@ static void observer_start_task(void *arg)
     TickType_t start_time = xTaskGetTickCount();
     TickType_t timeout_ticks = pdMS_TO_TICKS(UART_RX_TIMEOUT);
     
-    while (!scan_complete && (xTaskGetTickCount() - start_time) < timeout_ticks && observer_running) {
+    while (!scan_complete && (xTaskGetTickCount() - start_time) < timeout_ticks && ctx->observer_running) {
         int len = uart_read_bytes(uart_port, rx_buffer, UART_BUF_SIZE - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
@@ -6255,13 +6290,13 @@ static void observer_start_task(void *arg)
                         }
                         
                         // Parse network line from scan
-                        if (line_buffer[0] == '"' && scanned_count < MAX_NETWORKS) {
+                        if (line_buffer[0] == '"' && scanned_count < MAX_OBSERVER_NETWORKS) {
                             observer_network_t net = {0};
                             if (parse_scan_to_observer(line_buffer, &net)) {
-                                observer_networks[scanned_count] = net;
+                                ctx->observer_networks[scanned_count] = net;
                                 scanned_count++;
-                                ESP_LOGI(TAG, "  -> Parsed scan network #%d: '%s' BSSID=%s CH%d %s %ddBm", 
-                                         net.scan_index, net.ssid, net.bssid, net.channel, net.band, net.rssi);
+                                ESP_LOGI(TAG, "[%s] Parsed network #%d: '%s' BSSID=%s CH%d %s %ddBm", 
+                                         uart_name, net.scan_index, net.ssid, net.bssid, net.channel, net.band, net.rssi);
                             }
                         }
                         
@@ -6274,76 +6309,71 @@ static void observer_start_task(void *arg)
         }
     }
     
-    // Save count of scanned networks
-    observer_network_count = scanned_count;
-    ESP_LOGI(TAG, "Scan complete: %d networks added to observer list", observer_network_count);
-    
-    // Copy observer results to current tab's context for independent state
-    {
-        tab_context_t *ctx = get_current_ctx();
-        if (ctx && ctx->observer_networks) {
-            memcpy(ctx->observer_networks, observer_networks, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
-            ctx->observer_network_count = observer_network_count;
-            ESP_LOGI(TAG, "Copied %d observer results to tab %d context", observer_network_count, current_tab);
-        }
-    }
+    // Save count of scanned networks directly to context
+    ctx->observer_network_count = scanned_count;
+    ESP_LOGI(TAG, "[%s] Scan complete: %d networks", uart_name, ctx->observer_network_count);
     
     // Update UI immediately with scanned networks (all with 0 clients)
     bsp_display_lock(0);
-    if (observer_status_label) {
-        lv_label_set_text_fmt(observer_status_label, "Found %d networks, starting sniffer...", observer_network_count);
+    if (ctx->observer_status_label) {
+        lv_label_set_text_fmt(ctx->observer_status_label, "Found %d networks, starting sniffer...", ctx->observer_network_count);
     }
-    update_observer_table();
+    update_observer_table(ctx);
     bsp_display_unlock();
     
-    if (!observer_running) {
-        ESP_LOGI(TAG, "Observer stopped during scan");
+    if (!ctx->observer_running) {
+        ESP_LOGI(TAG, "[%s] Observer stopped during scan", uart_name);
         vTaskDelete(NULL);
         return;
     }
     
     // Step 2: Start sniffer
-    ESP_LOGI(TAG, "Starting sniffer...");
+    ESP_LOGI(TAG, "[%s] Starting sniffer...", uart_name);
     bsp_display_lock(0);
-    if (observer_status_label) {
-        lv_label_set_text_fmt(observer_status_label, "%d networks, waiting for clients...", observer_network_count);
+    if (ctx->observer_status_label) {
+        lv_label_set_text_fmt(ctx->observer_status_label, "%d networks, waiting for clients...", ctx->observer_network_count);
     }
     bsp_display_unlock();
     
     vTaskDelay(pdMS_TO_TICKS(500));  // Short delay
     uart_flush(uart_port);
-    uart_send_command_for_tab("start_sniffer_noscan");
+    char sniffer_cmd[] = "start_sniffer_noscan\r\n";
+    uart_write_bytes(uart_port, sniffer_cmd, strlen(sniffer_cmd));
+    ESP_LOGI(TAG, "[%s] Sent: start_sniffer_noscan", uart_name);
     
     vTaskDelay(pdMS_TO_TICKS(1000));  // Wait for sniffer to start
     
     // Step 3: Start periodic timer for polling sniffer results
-    if (observer_running) {
-        ESP_LOGI(TAG, "Starting observer timer (every %d ms)", OBSERVER_POLL_INTERVAL_MS);
+    if (ctx->observer_running) {
+        ESP_LOGI(TAG, "[%s] Starting observer timer (every %d ms)", uart_name, OBSERVER_POLL_INTERVAL_MS);
         
         bsp_display_lock(0);
-        if (observer_status_label) {
-            lv_label_set_text(observer_status_label, "Observing... (updates every 20s)");
+        if (ctx->observer_status_label) {
+            lv_label_set_text(ctx->observer_status_label, "Observing... (updates every 20s)");
         }
         bsp_display_unlock();
         
-        // Create and start timer
-        if (observer_timer == NULL) {
-            observer_timer = xTimerCreate("obs_timer", 
+        // Create timer per-context (store ctx as timer ID for callback)
+        if (ctx->observer_timer == NULL) {
+            ctx->observer_timer = xTimerCreate("obs_timer", 
                                           pdMS_TO_TICKS(OBSERVER_POLL_INTERVAL_MS),
                                           pdTRUE,  // Auto-reload
-                                          NULL,
+                                          (void*)ctx,  // Pass ctx as timer ID
                                           observer_timer_callback);
+        } else {
+            // Update timer ID to current ctx
+            vTimerSetTimerID(ctx->observer_timer, (void*)ctx);
         }
         
-        if (observer_timer != NULL) {
-            xTimerStart(observer_timer, 0);
+        if (ctx->observer_timer != NULL) {
+            xTimerStart(ctx->observer_timer, 0);
             
-            // Do first poll immediately
-            xTaskCreate(observer_poll_task, "obs_poll", 8192, NULL, 5, &observer_task_handle);
+            // Do first poll immediately, pass ctx
+            xTaskCreate(observer_poll_task, "obs_poll", 8192, (void*)ctx, 5, &observer_task_handle);
         }
     }
     
-    ESP_LOGI(TAG, "Observer start task finished");
+    ESP_LOGI(TAG, "[%s] Observer start task finished", uart_name);
     vTaskDelete(NULL);
 }
 
@@ -6352,44 +6382,33 @@ static void observer_start_btn_cb(lv_event_t *e)
 {
     (void)e;
     
-    if (observer_running) {
-        ESP_LOGW(TAG, "Observer already running");
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
+    
+    if (ctx->observer_running) {
+        ESP_LOGW(TAG, "Observer already running on tab %d", current_tab);
         return;
     }
     
     ESP_LOGI(TAG, "Starting Network Observer on tab %d", current_tab);
-    observer_running = true;
-    
-    // Also mark in context so tab switching knows observer is active
-    tab_context_t *ctx = get_current_ctx();
-    if (ctx) {
-        ctx->observer_running = true;
-    }
+    ctx->observer_running = true;
     
     // Disable start button, enable stop button
-    lv_obj_add_state(observer_start_btn, LV_STATE_DISABLED);
-    lv_obj_clear_state(observer_stop_btn, LV_STATE_DISABLED);
+    if (ctx->observer_start_btn) {
+        lv_obj_add_state(ctx->observer_start_btn, LV_STATE_DISABLED);
+    }
+    if (ctx->observer_stop_btn) {
+        lv_obj_clear_state(ctx->observer_stop_btn, LV_STATE_DISABLED);
+    }
     
     // Clear table
-    if (observer_table) {
-        lv_obj_clean(observer_table);
+    if (ctx->observer_table) {
+        lv_obj_clean(ctx->observer_table);
     }
     
-    // In UART2 tab with active Kraken scanning, use existing background scan
-    if (current_tab == 1 && kraken_scanning_active) {
-        ESP_LOGI(TAG, "UART2 tab: using background scanning");
-        lv_label_set_text(observer_status_label, "UART2: Scanning...");
-        lv_obj_set_style_text_color(observer_status_label, COLOR_MATERIAL_CYAN, 0);
-        
-        // Show existing data if available
-        if (observer_network_count > 0) {
-            update_observer_table();
-        }
-        return;  // Don't start new task
-    }
-    
-    // Start observer task for current tab's UART
-    xTaskCreate(observer_start_task, "obs_start", 8192, NULL, 5, NULL);
+    // Start observer task for current tab's UART, pass ctx
+    // Both UART1 and UART2 use the same flow - fully independent
+    xTaskCreate(observer_start_task, "obs_start", 8192, (void*)ctx, 5, NULL);
 }
 
 // Stop button click handler
@@ -6397,34 +6416,35 @@ static void observer_stop_btn_cb(lv_event_t *e)
 {
     (void)e;
     
-    if (!observer_running) {
-        ESP_LOGW(TAG, "Observer not running");
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
+    
+    if (!ctx->observer_running) {
+        ESP_LOGW(TAG, "Observer not running on tab %d", current_tab);
         return;
     }
     
     ESP_LOGI(TAG, "Stopping Network Observer on tab %d", current_tab);
-    observer_running = false;
+    ctx->observer_running = false;
     
-    // Also clear in context
-    tab_context_t *ctx = get_current_ctx();
-    if (ctx) {
-        ctx->observer_running = false;
-    }
-    
-    // Stop timer
-    if (observer_timer != NULL) {
-        xTimerStop(observer_timer, 0);
+    // Stop timer for this context
+    if (ctx->observer_timer != NULL) {
+        xTimerStop(ctx->observer_timer, 0);
     }
     
     // Send stop command to current tab's UART
     uart_send_command_for_tab("stop");
     
     // Update UI
-    lv_obj_clear_state(observer_start_btn, LV_STATE_DISABLED);
-    lv_obj_add_state(observer_stop_btn, LV_STATE_DISABLED);
+    if (ctx->observer_start_btn) {
+        lv_obj_clear_state(ctx->observer_start_btn, LV_STATE_DISABLED);
+    }
+    if (ctx->observer_stop_btn) {
+        lv_obj_add_state(ctx->observer_stop_btn, LV_STATE_DISABLED);
+    }
     
-    if (observer_status_label) {
-        lv_label_set_text(observer_status_label, "Stopped");
+    if (ctx->observer_status_label) {
+        lv_label_set_text(ctx->observer_status_label, "Stopped");
     }
 }
 
@@ -6434,34 +6454,30 @@ static void observer_back_btn_event_cb(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "Observer back button clicked, returning to tiles for tab %d", current_tab);
     
-    // Mark observer page as not visible
-    observer_page_visible = false;
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
     
-    // In Kraken mode, keep UART2 scanning running in background
+    // Mark observer page as not visible in context
+    ctx->observer_page_visible = false;
+    
+    // In Kraken mode (UART2), keep scanning running in background
     // Only stop UART1-based scanning
-    if (observer_running) {
-        observer_running = false;
-        
-        // Also clear in context
-        tab_context_t *stop_ctx = get_current_ctx();
-        if (stop_ctx) {
-            stop_ctx->observer_running = false;
-        }
-        
-        if (observer_timer != NULL) {
-            xTimerStop(observer_timer, 0);
-        }
-        // Only send stop command for UART1 scanning (non-Kraken mode)
-        if (hw_config == 0) {  // Monster mode
+    if (ctx->observer_running) {
+        // For UART1 (tab 0, Monster mode), stop observer
+        // For UART2 (tab 1, Kraken mode), keep running in background
+        if (current_tab == 0) {
+            ctx->observer_running = false;
+            
+            if (ctx->observer_timer != NULL) {
+                xTimerStop(ctx->observer_timer, 0);
+            }
             uart_send_command_for_tab("stop");
         }
+        // UART2/Kraken keeps running in background (don't stop)
     }
     
     // Update portal icon visibility
     update_portal_icon();
-    
-    // Get current tab's data and show tiles
-    tab_context_t *ctx = get_current_ctx();
     
     // Hide observer page
     if (ctx->observer_page) {
@@ -6543,34 +6559,34 @@ static void show_observer_page(void)
     lv_obj_set_style_text_color(title, COLOR_MATERIAL_TEAL, 0);
     lv_obj_align_to(title, back_btn, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
     
-    // Stop button (red) - positioned right
-    observer_stop_btn = lv_btn_create(header);
-    lv_obj_set_size(observer_stop_btn, 100, 40);
-    lv_obj_align(observer_stop_btn, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(observer_stop_btn, COLOR_MATERIAL_RED, 0);
-    lv_obj_set_style_bg_color(observer_stop_btn, lv_color_lighten(COLOR_MATERIAL_RED, 30), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(observer_stop_btn, lv_color_hex(0x444444), LV_STATE_DISABLED);
-    lv_obj_set_style_radius(observer_stop_btn, 8, 0);
-    lv_obj_add_event_cb(observer_stop_btn, observer_stop_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_state(observer_stop_btn, LV_STATE_DISABLED);  // Initially disabled
+    // Stop button (red) - positioned right - store in ctx
+    ctx->observer_stop_btn = lv_btn_create(header);
+    lv_obj_set_size(ctx->observer_stop_btn, 100, 40);
+    lv_obj_align(ctx->observer_stop_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(ctx->observer_stop_btn, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_bg_color(ctx->observer_stop_btn, lv_color_lighten(COLOR_MATERIAL_RED, 30), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(ctx->observer_stop_btn, lv_color_hex(0x444444), LV_STATE_DISABLED);
+    lv_obj_set_style_radius(ctx->observer_stop_btn, 8, 0);
+    lv_obj_add_event_cb(ctx->observer_stop_btn, observer_stop_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_state(ctx->observer_stop_btn, LV_STATE_DISABLED);  // Initially disabled
     
-    lv_obj_t *stop_label = lv_label_create(observer_stop_btn);
+    lv_obj_t *stop_label = lv_label_create(ctx->observer_stop_btn);
     lv_label_set_text(stop_label, "Stop");
     lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(stop_label, lv_color_hex(0xFFFFFF), 0);
     lv_obj_center(stop_label);
     
-    // Start button (green) - positioned left of stop button
-    observer_start_btn = lv_btn_create(header);
-    lv_obj_set_size(observer_start_btn, 100, 40);
-    lv_obj_align_to(observer_start_btn, observer_stop_btn, LV_ALIGN_OUT_LEFT_MID, -12, 0);
-    lv_obj_set_style_bg_color(observer_start_btn, COLOR_MATERIAL_GREEN, 0);
-    lv_obj_set_style_bg_color(observer_start_btn, lv_color_lighten(COLOR_MATERIAL_GREEN, 30), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(observer_start_btn, lv_color_hex(0x444444), LV_STATE_DISABLED);
-    lv_obj_set_style_radius(observer_start_btn, 8, 0);
-    lv_obj_add_event_cb(observer_start_btn, observer_start_btn_cb, LV_EVENT_CLICKED, NULL);
+    // Start button (green) - positioned left of stop button - store in ctx
+    ctx->observer_start_btn = lv_btn_create(header);
+    lv_obj_set_size(ctx->observer_start_btn, 100, 40);
+    lv_obj_align_to(ctx->observer_start_btn, ctx->observer_stop_btn, LV_ALIGN_OUT_LEFT_MID, -12, 0);
+    lv_obj_set_style_bg_color(ctx->observer_start_btn, COLOR_MATERIAL_GREEN, 0);
+    lv_obj_set_style_bg_color(ctx->observer_start_btn, lv_color_lighten(COLOR_MATERIAL_GREEN, 30), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(ctx->observer_start_btn, lv_color_hex(0x444444), LV_STATE_DISABLED);
+    lv_obj_set_style_radius(ctx->observer_start_btn, 8, 0);
+    lv_obj_add_event_cb(ctx->observer_start_btn, observer_start_btn_cb, LV_EVENT_CLICKED, NULL);
     
-    lv_obj_t *start_label = lv_label_create(observer_start_btn);
+    lv_obj_t *start_label = lv_label_create(ctx->observer_start_btn);
     lv_label_set_text(start_label, "Start");
     lv_obj_set_style_text_font(start_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(start_label, lv_color_hex(0xFFFFFF), 0);
@@ -6579,7 +6595,7 @@ static void show_observer_page(void)
     // Probes & Karma button (orange) - positioned left of start button
     lv_obj_t *karma_btn = lv_btn_create(header);
     lv_obj_set_size(karma_btn, 120, 40);
-    lv_obj_align_to(karma_btn, observer_start_btn, LV_ALIGN_OUT_LEFT_MID, -12, 0);
+    lv_obj_align_to(karma_btn, ctx->observer_start_btn, LV_ALIGN_OUT_LEFT_MID, -12, 0);
     lv_obj_set_style_bg_color(karma_btn, COLOR_MATERIAL_ORANGE, 0);
     lv_obj_set_style_bg_color(karma_btn, lv_color_lighten(COLOR_MATERIAL_ORANGE, 30), LV_STATE_PRESSED);
     lv_obj_set_style_radius(karma_btn, 8, 0);
@@ -6591,15 +6607,14 @@ static void show_observer_page(void)
     lv_obj_set_style_text_color(karma_label, lv_color_hex(0x000000), 0);
     lv_obj_center(karma_label);
     
-    // Status label
-    observer_status_label = lv_label_create(observer_page);
-    lv_label_set_text(observer_status_label, "Press Start to begin observing");
-    lv_obj_set_style_text_font(observer_status_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(observer_status_label, lv_color_hex(0x888888), 0);
+    // Status label - store in ctx
+    ctx->observer_status_label = lv_label_create(ctx->observer_page);
+    lv_label_set_text(ctx->observer_status_label, "Press Start to begin observing");
+    lv_obj_set_style_text_font(ctx->observer_status_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(ctx->observer_status_label, lv_color_hex(0x888888), 0);
     
-    // Network table container (scrollable)
-    ctx->observer_table = lv_obj_create(observer_page);
-    observer_table = ctx->observer_table;  // Keep global reference for legacy code
+    // Network table container (scrollable) - store in ctx
+    ctx->observer_table = lv_obj_create(ctx->observer_page);
     lv_obj_set_size(ctx->observer_table, lv_pct(100), lv_pct(100));
     lv_obj_set_flex_grow(ctx->observer_table, 1);
     lv_obj_set_style_bg_color(ctx->observer_table, lv_color_hex(0x0A1A1A), 0);
@@ -6611,50 +6626,26 @@ static void show_observer_page(void)
     lv_obj_set_style_pad_row(ctx->observer_table, 6, 0);
     lv_obj_set_scroll_dir(ctx->observer_table, LV_DIR_VER);
     
-    // If we have existing data, show it
-    if (observer_network_count > 0) {
-        lv_label_set_text_fmt(observer_status_label, "%d networks (cached)", observer_network_count);
-        update_observer_table();
+    // If we have existing data in context, show it
+    if (ctx->observer_network_count > 0) {
+        lv_label_set_text_fmt(ctx->observer_status_label, "%d networks (cached)", ctx->observer_network_count);
+        update_observer_table(ctx);
     }
     
-    // Update button states based on observer_running
-    if (observer_running) {
-        lv_obj_add_state(observer_start_btn, LV_STATE_DISABLED);
-        lv_obj_clear_state(observer_stop_btn, LV_STATE_DISABLED);
-        lv_label_set_text_fmt(observer_status_label, "%d networks (monitoring...)", observer_network_count);
+    // Update button states based on observer_running in context
+    if (ctx->observer_running) {
+        lv_obj_add_state(ctx->observer_start_btn, LV_STATE_DISABLED);
+        lv_obj_clear_state(ctx->observer_stop_btn, LV_STATE_DISABLED);
+        lv_label_set_text_fmt(ctx->observer_status_label, "%d networks (monitoring...)", ctx->observer_network_count);
     }
     
-    // Mark observer page as visible
-    observer_page_visible = true;
+    // Mark observer page as visible in context
+    ctx->observer_page_visible = true;
     
     update_portal_icon();
     
-    // In UART2 tab, start background scanning if not already running
-    if (current_tab == 1 && uart2_initialized) {
-        if (!kraken_scanning_active) {
-            start_kraken_scanning();
-        }
-        
-        // Auto-start display in UART2 tab
-        if (kraken_scanning_active) {
-            observer_running = true;
-            observer_page_visible = true;
-            
-            // Also mark in context
-            tab_context_t *obs_ctx = get_current_ctx();
-            if (obs_ctx) {
-                obs_ctx->observer_running = true;
-            }
-            
-            // Disable Start, enable Stop
-            lv_obj_add_state(observer_start_btn, LV_STATE_DISABLED);
-            lv_obj_clear_state(observer_stop_btn, LV_STATE_DISABLED);
-            
-            lv_label_set_text(observer_status_label, "UART2: Continuous scanning...");
-            lv_obj_set_style_text_color(observer_status_label, COLOR_MATERIAL_CYAN, 0);
-            update_portal_icon();
-        }
-    }
+    // NO auto-start! User must click Start button manually
+    // Both UART1 and UART2 work the same way - fully independent
     
     // Set current visible page
     ctx->current_visible_page = ctx->observer_page;
@@ -12809,15 +12800,20 @@ static void kraken_scan_task(void *arg)
 {
     // Get context passed to task (should be uart2_ctx)
     tab_context_t *ctx = (tab_context_t *)arg;
+    if (!ctx) {
+        ESP_LOGE(TAG, "[UART2] Kraken scan task: NULL context!");
+        kraken_scan_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
     
-    ESP_LOGI(TAG, "[UART2] Kraken scan task running");
+    ESP_LOGI(TAG, "[UART2] Kraken scan task running for uart2_ctx");
     
-    // Check if PSRAM buffers are allocated (use context buffers if available)
-    observer_network_t *obs_networks = (ctx && ctx->observer_networks) ? ctx->observer_networks : observer_networks;
-    if (!observer_rx_buffer || !observer_line_buffer || !obs_networks) {
+    // Check if PSRAM buffers are allocated
+    if (!observer_rx_buffer || !observer_line_buffer || !ctx->observer_networks) {
         ESP_LOGE(TAG, "[UART2] PSRAM buffers not allocated!");
         kraken_scan_task_handle = NULL;
-        if (ctx) ctx->observer_running = false;
+        ctx->observer_running = false;
         vTaskDelete(NULL);
         return;
     }
@@ -12832,17 +12828,17 @@ static void kraken_scan_task(void *arg)
     ESP_LOGI(TAG, "[UART2] Phase 1: Scanning networks...");
     
     // Update UI
-    if (observer_page_visible) {
+    if (ctx->observer_page_visible) {
         bsp_display_lock(0);
-        if (observer_status_label) {
-            lv_label_set_text(observer_status_label, "Kraken: Scanning networks...");
+        if (ctx->observer_status_label) {
+            lv_label_set_text(ctx->observer_status_label, "Kraken: Scanning networks...");
         }
         bsp_display_unlock();
     }
     
-    // Clear previous results
-    observer_network_count = 0;
-    memset(observer_networks, 0, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
+    // Clear previous results in context
+    ctx->observer_network_count = 0;
+    memset(ctx->observer_networks, 0, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
     
     // Flush UART2 buffer
     uart_flush(UART2_NUM);
@@ -12886,7 +12882,7 @@ static void kraken_scan_task(void *arg)
                         if (line_buffer[0] == '"' && scanned_count < MAX_OBSERVER_NETWORKS) {
                             observer_network_t net = {0};
                             if (parse_scan_to_observer(line_buffer, &net)) {
-                                observer_networks[scanned_count] = net;
+                                ctx->observer_networks[scanned_count] = net;
                                 scanned_count++;
                                 ESP_LOGI(TAG, "[UART2] Parsed network #%d: '%s' BSSID=%s CH%d", 
                                          net.scan_index, net.ssid, net.bssid, net.channel);
@@ -12902,23 +12898,16 @@ static void kraken_scan_task(void *arg)
         }
     }
     
-    observer_network_count = scanned_count;
-    ESP_LOGI(TAG, "[UART2] Phase 1 complete: %d networks found", observer_network_count);
-    
-    // Copy observer results to UART2 tab context (Kraken always uses UART2)
-    if (uart2_ctx.observer_networks) {
-        memcpy(uart2_ctx.observer_networks, observer_networks, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
-        uart2_ctx.observer_network_count = observer_network_count;
-        ESP_LOGI(TAG, "[UART2] Copied %d observer results to uart2_ctx", observer_network_count);
-    }
+    ctx->observer_network_count = scanned_count;
+    ESP_LOGI(TAG, "[UART2] Phase 1 complete: %d networks found", ctx->observer_network_count);
     
     // Update UI with scanned networks
-    if (observer_page_visible) {
+    if (ctx->observer_page_visible) {
         bsp_display_lock(0);
-        if (observer_status_label) {
-            lv_label_set_text_fmt(observer_status_label, "Kraken: %d networks, starting sniffer...", observer_network_count);
+        if (ctx->observer_status_label) {
+            lv_label_set_text_fmt(ctx->observer_status_label, "Kraken: %d networks, starting sniffer...", ctx->observer_network_count);
         }
-        update_observer_table();
+        update_observer_table(ctx);
         bsp_display_unlock();
     }
     
@@ -12940,11 +12929,11 @@ static void kraken_scan_task(void *arg)
     
     vTaskDelay(pdMS_TO_TICKS(1000));  // Wait for sniffer to start
     
-    if (observer_page_visible) {
+    if (ctx->observer_page_visible) {
         bsp_display_lock(0);
-        if (observer_status_label) {
-            lv_label_set_text_fmt(observer_status_label, "Kraken: %d networks, observing...", observer_network_count);
-            lv_obj_set_style_text_color(observer_status_label, COLOR_MATERIAL_CYAN, 0);
+        if (ctx->observer_status_label) {
+            lv_label_set_text_fmt(ctx->observer_status_label, "Kraken: %d networks, observing...", ctx->observer_network_count);
+            lv_obj_set_style_text_color(ctx->observer_status_label, COLOR_MATERIAL_CYAN, 0);
         }
         bsp_display_unlock();
     }
@@ -12987,8 +12976,8 @@ static void kraken_scan_task(void *arg)
                                 if (parse_sniffer_network_line(line_buffer, &parsed_net)) {
                                     // Find this network in our list by SSID
                                     current_network_idx = -1;
-                                    for (int n = 0; n < observer_network_count; n++) {
-                                        if (strcmp(observer_networks[n].ssid, parsed_net.ssid) == 0) {
+                                    for (int n = 0; n < ctx->observer_network_count; n++) {
+                                        if (strcmp(ctx->observer_networks[n].ssid, parsed_net.ssid) == 0) {
                                             current_network_idx = n;
                                             break;
                                         }
@@ -12999,7 +12988,7 @@ static void kraken_scan_task(void *arg)
                             }
                             // Check for client MAC line (starts with space)
                             else if ((line_buffer[0] == ' ' || line_buffer[0] == '\t') && current_network_idx >= 0) {
-                                observer_network_t *net = &observer_networks[current_network_idx];
+                                observer_network_t *net = &ctx->observer_networks[current_network_idx];
                                 char mac[18];
                                 if (parse_sniffer_client_line(line_buffer, mac, sizeof(mac))) {
                                     if (add_client_mac(net, mac)) {
@@ -13018,17 +13007,17 @@ static void kraken_scan_task(void *arg)
             }
         }
         
-        // Update UI if observer page is visible
-        if (observer_page_visible && observer_table != NULL) {
+        // Update UI if observer page is visible (use ctx)
+        if (ctx->observer_page_visible && ctx->observer_table != NULL) {
             bsp_display_lock(0);
-            update_observer_table();
-            if (observer_status_label) {
+            update_observer_table(ctx);
+            if (ctx->observer_status_label) {
                 int clients_total = 0;
-                for (int i = 0; i < observer_network_count; i++) {
-                    clients_total += observer_networks[i].client_count;
+                for (int i = 0; i < ctx->observer_network_count; i++) {
+                    clients_total += ctx->observer_networks[i].client_count;
                 }
-                lv_label_set_text_fmt(observer_status_label, "Kraken: %d networks, %d clients", 
-                                      observer_network_count, clients_total);
+                lv_label_set_text_fmt(ctx->observer_status_label, "Kraken: %d networks, %d clients", 
+                                      ctx->observer_network_count, clients_total);
             }
             bsp_display_unlock();
         }
