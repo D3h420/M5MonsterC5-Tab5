@@ -636,26 +636,44 @@ static void init_all_tab_contexts(void) {
 static void restore_tab_context_to_globals(tab_context_t *ctx) {
     if (!ctx) return;
     
-    // Restore WiFi scan results
-    if (ctx->networks && ctx->network_count > 0) {
-        memcpy(networks, ctx->networks, sizeof(wifi_network_t) * MAX_NETWORKS);
-        network_count = ctx->network_count;
-        memcpy(selected_network_indices, ctx->selected_indices, sizeof(selected_network_indices));
-        selected_network_count = ctx->selected_count;
-        ESP_LOGI(TAG, "Restored %d scan results (%d selected) from context to globals", network_count, selected_network_count);
+    // Restore WiFi scan results (only if no scan is in progress)
+    if (!scan_in_progress) {
+        if (ctx->networks && ctx->network_count > 0) {
+            memcpy(networks, ctx->networks, sizeof(wifi_network_t) * MAX_NETWORKS);
+            network_count = ctx->network_count;
+            memcpy(selected_network_indices, ctx->selected_indices, sizeof(selected_network_indices));
+            selected_network_count = ctx->selected_count;
+            ESP_LOGI(TAG, "Restored %d scan results (%d selected) from context to globals", network_count, selected_network_count);
+        } else {
+            // Clear globals if context has no data
+            network_count = 0;
+            selected_network_count = 0;
+        }
     } else {
-        // Clear globals if context has no data
-        network_count = 0;
-        selected_network_count = 0;
+        ESP_LOGI(TAG, "Skipping scan results restore - scan in progress");
     }
     
-    // Restore observer results
-    if (ctx->observer_networks && ctx->observer_network_count > 0) {
-        memcpy(observer_networks, ctx->observer_networks, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
-        observer_network_count = ctx->observer_network_count;
-        ESP_LOGI(TAG, "Restored %d observer results from context to globals", observer_network_count);
+    // Restore observer results (only if observer is NOT running on another tab)
+    // Check if observer is running on a DIFFERENT tab than we're switching TO
+    bool observer_on_other_tab = false;
+    if (observer_running) {
+        // Observer is running - check if it's on a different tab
+        if ((ctx == &uart1_ctx && uart2_ctx.observer_running) ||
+            (ctx == &uart2_ctx && uart1_ctx.observer_running)) {
+            observer_on_other_tab = true;
+        }
+    }
+    
+    if (!observer_on_other_tab && !observer_running) {
+        if (ctx->observer_networks && ctx->observer_network_count > 0) {
+            memcpy(observer_networks, ctx->observer_networks, sizeof(observer_network_t) * MAX_OBSERVER_NETWORKS);
+            observer_network_count = ctx->observer_network_count;
+            ESP_LOGI(TAG, "Restored %d observer results from context to globals", observer_network_count);
+        } else {
+            observer_network_count = 0;
+        }
     } else {
-        observer_network_count = 0;
+        ESP_LOGI(TAG, "Skipping observer restore - observer running on another tab");
     }
     
 }
@@ -854,6 +872,20 @@ static int karma2_selected_probe_idx = -1;
 static char karma2_html_files[KARMA2_MAX_HTML_FILES][64];
 static int karma2_html_count = 0;
 
+// Ad Hoc Portal page (INTERNAL tab)
+static lv_obj_t *adhoc_portal_page = NULL;
+static lv_obj_t *adhoc_portal_status_label = NULL;
+static lv_obj_t *adhoc_portal_data_label = NULL;
+static lv_obj_t *adhoc_probes_popup_overlay = NULL;
+static lv_obj_t *adhoc_probes_popup_obj = NULL;
+static lv_obj_t *adhoc_html_popup_overlay = NULL;
+static lv_obj_t *adhoc_html_popup_obj = NULL;
+static lv_obj_t *adhoc_html_dropdown = NULL;
+static char adhoc_probes[KARMA2_MAX_PROBES * 2][33];  // Double size for union of both UARTs
+static int adhoc_probe_count = 0;
+static int adhoc_selected_probe_idx = -1;
+static char portal_selected_html[64] = {0};  // Track which HTML file was selected
+
 // Default portal HTML (fallback)
 static const char *default_portal_html = 
     "<!DOCTYPE html><html><head>"
@@ -980,6 +1012,15 @@ static void evil_twin_connect_popup_yes_cb(lv_event_t *e);
 static void evil_twin_connect_popup_cancel_cb(lv_event_t *e);
 static void arp_auto_connect_timer_cb(lv_timer_t *timer);
 static void show_karma_page(void);
+static void show_adhoc_portal_page(void);  // INTERNAL tab Ad Hoc Portal page
+static void adhoc_portal_back_cb(lv_event_t *e);
+static void adhoc_portal_stop_cb(lv_event_t *e);
+static void adhoc_show_probes_cb(lv_event_t *e);
+static void adhoc_fetch_probes_from_all_uarts(void);
+static void adhoc_probe_click_cb(lv_event_t *e);
+static void adhoc_html_popup_close_cb(lv_event_t *e);
+static void adhoc_html_select_cb(lv_event_t *e);
+static void switch_to_adhoc_portal_page(void);
 static void karma_back_cb(lv_event_t *e);
 static void karma_start_sniffer_cb(lv_event_t *e);
 static void karma_stop_sniffer_cb(lv_event_t *e);
@@ -2719,8 +2760,11 @@ static void handshaker_popup_close_cb(lv_event_t *e)
 // Handshaker monitor task - reads UART for handshake capture
 static void handshaker_monitor_task(void *arg)
 {
-    // Save the tab that started this task
-    int task_tab = current_tab;
+    // Get context passed to task (so we use correct ctx even if tab changes)
+    tab_context_t *ctx = (tab_context_t *)arg;
+    
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
     uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
     const char *uart_name = (task_tab == 1) ? "UART2" : "UART1";
     
@@ -2730,7 +2774,8 @@ static void handshaker_monitor_task(void *arg)
     static char line_buffer[256];
     int line_pos = 0;
     
-    while (handshaker_monitoring) {
+    // Use context's flag instead of global
+    while (ctx && ctx->handshaker_monitoring) {
         int len = uart_read_bytes(uart_port, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
@@ -2886,7 +2931,13 @@ static void show_handshaker_popup(void)
     
     // Start monitoring task
     handshaker_monitoring = true;
-    xTaskCreate(handshaker_monitor_task, "hs_monitor", 4096, NULL, 5, &handshaker_monitor_task_handle);
+    
+    // Also mark in context (ctx already available from earlier in function)
+    if (ctx) {
+        ctx->handshaker_monitoring = true;
+    }
+    
+    xTaskCreate(handshaker_monitor_task, "hs_monitor", 4096, (void*)ctx, 5, &handshaker_monitor_task_handle);
 }
 
 // ======================= ARP Poison Attack Functions =======================
@@ -4088,7 +4139,14 @@ static void karma_html_select_cb(lv_event_t *e)
     
     // Start monitoring task
     karma_monitoring = true;
-    xTaskCreate(karma_monitor_task, "karma_mon", 4096, NULL, 5, &karma_monitor_task_handle);
+    
+    // Also mark in context
+    tab_context_t *ctx = get_current_ctx();
+    if (ctx) {
+        ctx->karma_monitoring = true;
+    }
+    
+    xTaskCreate(karma_monitor_task, "karma_mon", 4096, (void*)ctx, 5, &karma_monitor_task_handle);
 }
 
 // Karma attack popup close callback
@@ -4121,10 +4179,11 @@ static void karma_attack_popup_close_cb(lv_event_t *e)
 // Karma monitor task - watches for portal status, client connect, password
 static void karma_monitor_task(void *arg)
 {
-    (void)arg;
+    // Get context passed to task
+    tab_context_t *ctx = (tab_context_t *)arg;
     
-    // Save the tab that started this task
-    int task_tab = current_tab;
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
     uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
     const char *uart_name = (task_tab == 1) ? "UART2" : "UART1";
     
@@ -4134,7 +4193,8 @@ static void karma_monitor_task(void *arg)
     static char line_buffer[256];
     int line_pos = 0;
     
-    while (karma_monitoring) {
+    // Use context's flag instead of global
+    while (ctx && ctx->karma_monitoring) {
         int len = uart_read_bytes(uart_port, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
@@ -4467,10 +4527,11 @@ static void evil_twin_close_cb(lv_event_t *e)
 // Evil Twin monitor task - watches UART for password capture
 static void evil_twin_monitor_task(void *arg)
 {
-    (void)arg;
+    // Get context passed to task
+    tab_context_t *ctx = (tab_context_t *)arg;
     
-    // Save the tab that started this task
-    int task_tab = current_tab;
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
     uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
     const char *uart_name = (task_tab == 1) ? "UART2" : "UART1";
     
@@ -4480,6 +4541,7 @@ static void evil_twin_monitor_task(void *arg)
     
     ESP_LOGI(TAG, "[%s] Evil Twin monitor task started for tab %d", uart_name, task_tab);
     
+    // Use global for now (could use ctx field if added to tab_context_t)
     while (evil_twin_monitoring) {
         int len = uart_read_bytes(uart_port, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(200));
         
@@ -4672,7 +4734,11 @@ static void evil_twin_start_cb(lv_event_t *e)
     
     // Start monitoring task
     evil_twin_monitoring = true;
-    xTaskCreate(evil_twin_monitor_task, "et_monitor", 4096, NULL, 5, &evil_twin_monitor_task_handle);
+    
+    // Also mark in context (if field exists)
+    tab_context_t *ctx = get_current_ctx();
+    
+    xTaskCreate(evil_twin_monitor_task, "et_monitor", 4096, (void*)ctx, 5, &evil_twin_monitor_task_handle);
 }
 
 // Show Evil Twin popup with dropdowns
@@ -4973,8 +5039,8 @@ static void internal_tile_event_cb(lv_event_t *e)
     if (strcmp(tile_name, "Settings") == 0) {
         show_settings_page();
     } else if (strcmp(tile_name, "Ad Hoc Portal") == 0) {
-        // Show portal status page
-        show_karma_page();
+        // Show Ad Hoc Portal page (with portal status or probe selection)
+        show_adhoc_portal_page();
     }
 }
 
@@ -6291,8 +6357,14 @@ static void observer_start_btn_cb(lv_event_t *e)
         return;
     }
     
-    ESP_LOGI(TAG, "Starting Network Observer");
+    ESP_LOGI(TAG, "Starting Network Observer on tab %d", current_tab);
     observer_running = true;
+    
+    // Also mark in context so tab switching knows observer is active
+    tab_context_t *ctx = get_current_ctx();
+    if (ctx) {
+        ctx->observer_running = true;
+    }
     
     // Disable start button, enable stop button
     lv_obj_add_state(observer_start_btn, LV_STATE_DISABLED);
@@ -6330,8 +6402,14 @@ static void observer_stop_btn_cb(lv_event_t *e)
         return;
     }
     
-    ESP_LOGI(TAG, "Stopping Network Observer");
+    ESP_LOGI(TAG, "Stopping Network Observer on tab %d", current_tab);
     observer_running = false;
+    
+    // Also clear in context
+    tab_context_t *ctx = get_current_ctx();
+    if (ctx) {
+        ctx->observer_running = false;
+    }
     
     // Stop timer
     if (observer_timer != NULL) {
@@ -6363,6 +6441,13 @@ static void observer_back_btn_event_cb(lv_event_t *e)
     // Only stop UART1-based scanning
     if (observer_running) {
         observer_running = false;
+        
+        // Also clear in context
+        tab_context_t *stop_ctx = get_current_ctx();
+        if (stop_ctx) {
+            stop_ctx->observer_running = false;
+        }
+        
         if (observer_timer != NULL) {
             xTimerStop(observer_timer, 0);
         }
@@ -6554,6 +6639,12 @@ static void show_observer_page(void)
         if (kraken_scanning_active) {
             observer_running = true;
             observer_page_visible = true;
+            
+            // Also mark in context
+            tab_context_t *obs_ctx = get_current_ctx();
+            if (obs_ctx) {
+                obs_ctx->observer_running = true;
+            }
             
             // Disable Start, enable Stop
             lv_obj_add_state(observer_start_btn, LV_STATE_DISABLED);
@@ -8498,34 +8589,35 @@ static void show_compromised_data_page(void)
 
 static void show_evil_twin_passwords_page(void)
 {
-    if (compromised_data_page) {
-        lv_obj_del(compromised_data_page);
-        compromised_data_page = NULL;
-    }
-    
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A1A), 0);
-    
-    create_status_bar();
-    create_tab_bar();
-    update_portal_icon();
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
     
     lv_obj_t *container = get_current_tab_container();
     if (!container) return;
     
+    hide_all_pages(ctx);
+    
+    // If page already exists, just show it (but we need to refresh data, so delete and recreate)
+    if (ctx->evil_twin_passwords_page) {
+        lv_obj_del(ctx->evil_twin_passwords_page);
+        ctx->evil_twin_passwords_page = NULL;
+    }
+    
     // Create page
-    compromised_data_page = lv_obj_create(container);
+    ctx->evil_twin_passwords_page = lv_obj_create(container);
     lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(compromised_data_page, lv_pct(100), scr_height - 85);
-    lv_obj_align(compromised_data_page, LV_ALIGN_TOP_MID, 0, 85);
-    lv_obj_set_style_bg_color(compromised_data_page, lv_color_hex(0x1A1A1A), 0);
-    lv_obj_set_style_border_width(compromised_data_page, 0, 0);
-    lv_obj_set_style_pad_all(compromised_data_page, 10, 0);
-    lv_obj_set_flex_flow(compromised_data_page, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(compromised_data_page, 8, 0);
+    lv_obj_set_size(ctx->evil_twin_passwords_page, lv_pct(100), scr_height - 85);
+    lv_obj_align(ctx->evil_twin_passwords_page, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(ctx->evil_twin_passwords_page, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_border_width(ctx->evil_twin_passwords_page, 0, 0);
+    lv_obj_set_style_pad_all(ctx->evil_twin_passwords_page, 10, 0);
+    lv_obj_set_flex_flow(ctx->evil_twin_passwords_page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(ctx->evil_twin_passwords_page, 8, 0);
+    
+    ctx->current_visible_page = ctx->evil_twin_passwords_page;
     
     // Header
-    lv_obj_t *header = lv_obj_create(compromised_data_page);
+    lv_obj_t *header = lv_obj_create(ctx->evil_twin_passwords_page);
     lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(header, 0, 0);
@@ -8552,13 +8644,13 @@ static void show_evil_twin_passwords_page(void)
     lv_obj_set_style_text_color(title, COLOR_MATERIAL_AMBER, 0);
     
     // Status label
-    lv_obj_t *status_label = lv_label_create(compromised_data_page);
+    lv_obj_t *status_label = lv_label_create(ctx->evil_twin_passwords_page);
     lv_label_set_text(status_label, "Loading...");
     lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(status_label, lv_color_hex(0x888888), 0);
     
     // Scrollable list container
-    lv_obj_t *list_container = lv_obj_create(compromised_data_page);
+    lv_obj_t *list_container = lv_obj_create(ctx->evil_twin_passwords_page);
     lv_obj_set_size(list_container, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(list_container, 1);
     lv_obj_set_style_bg_color(list_container, lv_color_hex(0x252525), 0);
@@ -8568,21 +8660,27 @@ static void show_evil_twin_passwords_page(void)
     lv_obj_set_flex_flow(list_container, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list_container, 8, 0);
     
+    // Flush RX buffer to clear any boot messages from ESP32C5
+    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_flush_input(uart_port);
+    
     // Send UART command and read response
     uart_send_command_for_tab("show_pass evil");
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(1000));  // Wait for ESP32C5 to process and read from SD
     
     static char rx_buffer[2048];
     int total_len = 0;
-    int retries = 5;
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    int retries = 10;
+    int empty_reads = 0;
     
-    while (retries-- > 0) {
+    while (retries-- > 0 && empty_reads < 3) {
         int len = uart_read_bytes(uart_port, rx_buffer + total_len, sizeof(rx_buffer) - total_len - 1, pdMS_TO_TICKS(200));
         if (len > 0) {
             total_len += len;
+            empty_reads = 0;  // Reset on successful read
+        } else {
+            empty_reads++;  // Only break after 3 consecutive empty reads
         }
-        if (len <= 0) break;
     }
     rx_buffer[total_len] = '\0';
     
@@ -9956,10 +10054,14 @@ static void karma2_attack_stop_cb(lv_event_t *e)
 static void karma2_attack_background_cb(lv_event_t *e)
 {
     (void)e;
-    ESP_LOGI(TAG, "Portal moved to background");
+    ESP_LOGI(TAG, "Portal moved to background, switching to INTERNAL tab");
     
     portal_background_mode = true;
     portal_new_data_count = 0;
+    
+    // Remember which UART started the portal (1=UART1, 2=UART2)
+    portal_started_by_uart = (current_tab == 0) ? 1 : 2;
+    ESP_LOGI(TAG, "Portal started by UART%d", portal_started_by_uart);
     
     // Close popup but keep portal running
     if (karma2_attack_popup_overlay) {
@@ -9970,6 +10072,641 @@ static void karma2_attack_background_cb(lv_event_t *e)
     }
     
     update_portal_icon();
+    
+    // Switch to INTERNAL tab and show Ad Hoc Portal page
+    switch_to_adhoc_portal_page();
+}
+
+// Helper to programmatically switch to INTERNAL tab and show Ad Hoc Portal page
+static void switch_to_adhoc_portal_page(void)
+{
+    ESP_LOGI(TAG, "Programmatically switching to INTERNAL tab (tab 2)");
+    
+    // Save current context before switching
+    tab_context_t *old_ctx = get_current_ctx();
+    save_globals_to_tab_context(old_ctx);
+    
+    // Hide current container
+    switch (current_tab) {
+        case 0:
+            if (uart1_container) lv_obj_add_flag(uart1_container, LV_OBJ_FLAG_HIDDEN);
+            break;
+        case 1:
+            if (uart2_container) lv_obj_add_flag(uart2_container, LV_OBJ_FLAG_HIDDEN);
+            break;
+        case 2:
+            if (internal_container) lv_obj_add_flag(internal_container, LV_OBJ_FLAG_HIDDEN);
+            break;
+    }
+    
+    // Switch to tab 2 (INTERNAL)
+    current_tab = 2;
+    update_tab_styles();
+    
+    // Restore INTERNAL tab context
+    tab_context_t *new_ctx = get_current_ctx();
+    restore_tab_context_to_globals(new_ctx);
+    restore_ui_pointers_from_ctx(new_ctx);
+    
+    // Show internal container
+    if (internal_container) {
+        lv_obj_clear_flag(internal_container, LV_OBJ_FLAG_HIDDEN);
+    }
+    
+    // Create internal tiles if not yet created
+    if (!internal_ctx.tiles) {
+        show_internal_tiles();
+    }
+    
+    // Now show the Ad Hoc Portal page
+    show_adhoc_portal_page();
+}
+
+//==================================================================================
+// Ad Hoc Portal & Karma Page (INTERNAL tab)
+//==================================================================================
+
+static void adhoc_portal_back_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Ad Hoc Portal back button clicked");
+    
+    // Hide ad hoc portal page, show internal tiles
+    if (adhoc_portal_page) {
+        lv_obj_add_flag(adhoc_portal_page, LV_OBJ_FLAG_HIDDEN);
+    }
+    
+    if (internal_ctx.tiles) {
+        lv_obj_clear_flag(internal_ctx.tiles, LV_OBJ_FLAG_HIDDEN);
+        internal_ctx.current_visible_page = internal_ctx.tiles;
+    }
+}
+
+static void adhoc_portal_stop_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Stopping captive portal from Ad Hoc Portal page");
+    
+    stop_captive_portal();
+    portal_active = false;
+    portal_background_mode = false;
+    portal_started_by_uart = 0;
+    
+    update_portal_icon();
+    
+    // Refresh the page to show inactive state
+    if (adhoc_portal_page) {
+        lv_obj_del(adhoc_portal_page);
+        adhoc_portal_page = NULL;
+    }
+    show_adhoc_portal_page();
+}
+
+// Fetch probes from UART1, and optionally UART2 if Kraken mode
+static void adhoc_fetch_probes_from_all_uarts(void)
+{
+    ESP_LOGI(TAG, "Fetching probes from UART(s)...");
+    
+    adhoc_probe_count = 0;
+    memset(adhoc_probes, 0, sizeof(adhoc_probes));
+    
+    static char rx_buffer[1024];
+    
+    // ========== Fetch from UART1 ==========
+    uart_flush(UART_NUM);
+    uart_write_bytes(UART_NUM, "list_probes\r\n", 13);
+    ESP_LOGI(TAG, "[UART1] Sent: list_probes");
+    
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(300));
+    if (len > 0) {
+        rx_buffer[len] = '\0';
+        ESP_LOGI(TAG, "[UART1] Received %d bytes", len);
+        
+        // Parse probes - format: "1. SSID_NAME"
+        char *line = strtok(rx_buffer, "\n");
+        while (line && adhoc_probe_count < KARMA2_MAX_PROBES * 2) {
+            // Skip empty lines and non-probe lines
+            if (strlen(line) > 3) {
+                char *dot = strchr(line, '.');
+                if (dot && dot[1] == ' ') {
+                    char *start = dot + 2;
+                    // Trim trailing whitespace
+                    char *end = start + strlen(start) - 1;
+                    while (end > start && (*end == '\r' || *end == '\n' || *end == ' ')) {
+                        *end = '\0';
+                        end--;
+                    }
+                    if (strlen(start) > 0 && strlen(start) < 33) {
+                        // Check for duplicates
+                        bool duplicate = false;
+                        for (int i = 0; i < adhoc_probe_count; i++) {
+                            if (strcmp(adhoc_probes[i], start) == 0) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (!duplicate) {
+                            strncpy(adhoc_probes[adhoc_probe_count], start, 32);
+                            adhoc_probes[adhoc_probe_count][32] = '\0';
+                            ESP_LOGI(TAG, "[UART1] Probe %d: %s", adhoc_probe_count + 1, adhoc_probes[adhoc_probe_count]);
+                            adhoc_probe_count++;
+                        }
+                    }
+                }
+            }
+            line = strtok(NULL, "\n");
+        }
+    }
+    
+    // ========== Fetch from UART2 if Kraken mode ==========
+    if (hw_config == 1 && uart2_initialized) {
+        ESP_LOGI(TAG, "Kraken mode - also fetching from UART2");
+        
+        uart_flush(UART2_NUM);
+        uart_write_bytes(UART2_NUM, "list_probes\r\n", 13);
+        ESP_LOGI(TAG, "[UART2] Sent: list_probes");
+        
+        vTaskDelay(pdMS_TO_TICKS(500));
+        
+        len = uart_read_bytes(UART2_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(300));
+        if (len > 0) {
+            rx_buffer[len] = '\0';
+            ESP_LOGI(TAG, "[UART2] Received %d bytes", len);
+            
+            char *line = strtok(rx_buffer, "\n");
+            while (line && adhoc_probe_count < KARMA2_MAX_PROBES * 2) {
+                if (strlen(line) > 3) {
+                    char *dot = strchr(line, '.');
+                    if (dot && dot[1] == ' ') {
+                        char *start = dot + 2;
+                        char *end = start + strlen(start) - 1;
+                        while (end > start && (*end == '\r' || *end == '\n' || *end == ' ')) {
+                            *end = '\0';
+                            end--;
+                        }
+                        if (strlen(start) > 0 && strlen(start) < 33) {
+                            // Check for duplicates
+                            bool duplicate = false;
+                            for (int i = 0; i < adhoc_probe_count; i++) {
+                                if (strcmp(adhoc_probes[i], start) == 0) {
+                                    duplicate = true;
+                                    break;
+                                }
+                            }
+                            if (!duplicate) {
+                                strncpy(adhoc_probes[adhoc_probe_count], start, 32);
+                                adhoc_probes[adhoc_probe_count][32] = '\0';
+                                ESP_LOGI(TAG, "[UART2] Probe %d: %s", adhoc_probe_count + 1, adhoc_probes[adhoc_probe_count]);
+                                adhoc_probe_count++;
+                            }
+                        }
+                    }
+                }
+                line = strtok(NULL, "\n");
+            }
+        }
+    }
+    
+    ESP_LOGI(TAG, "Total unique probes collected: %d", adhoc_probe_count);
+}
+
+static void adhoc_show_probes_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Show Probes button clicked on Ad Hoc Portal page");
+    
+    // Fetch probes from all available UARTs
+    adhoc_fetch_probes_from_all_uarts();
+    
+    // Create popup overlay in internal container
+    lv_obj_t *container = internal_container;
+    if (!container) return;
+    
+    adhoc_probes_popup_overlay = lv_obj_create(container);
+    lv_obj_remove_style_all(adhoc_probes_popup_overlay);
+    lv_obj_set_size(adhoc_probes_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(adhoc_probes_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(adhoc_probes_popup_overlay, LV_OPA_70, 0);
+    lv_obj_clear_flag(adhoc_probes_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    
+    adhoc_probes_popup_obj = lv_obj_create(adhoc_probes_popup_overlay);
+    lv_obj_set_size(adhoc_probes_popup_obj, 400, 450);
+    lv_obj_center(adhoc_probes_popup_obj);
+    lv_obj_set_style_bg_color(adhoc_probes_popup_obj, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_border_color(adhoc_probes_popup_obj, COLOR_MATERIAL_ORANGE, 0);
+    lv_obj_set_style_border_width(adhoc_probes_popup_obj, 2, 0);
+    lv_obj_set_style_radius(adhoc_probes_popup_obj, 12, 0);
+    lv_obj_set_style_pad_all(adhoc_probes_popup_obj, 15, 0);
+    lv_obj_set_flex_flow(adhoc_probes_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(adhoc_probes_popup_obj, 10, 0);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(adhoc_probes_popup_obj);
+    lv_label_set_text(title, LV_SYMBOL_WIFI " Select Network (Probes)");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_ORANGE, 0);
+    
+    // Subtitle showing source
+    lv_obj_t *subtitle = lv_label_create(adhoc_probes_popup_obj);
+    if (hw_config == 1) {
+        lv_label_set_text_fmt(subtitle, "Found %d unique probes (UART1 + UART2)", adhoc_probe_count);
+    } else {
+        lv_label_set_text_fmt(subtitle, "Found %d probes (UART1)", adhoc_probe_count);
+    }
+    lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(subtitle, lv_color_hex(0x888888), 0);
+    
+    // Scrollable list
+    lv_obj_t *list_container = lv_obj_create(adhoc_probes_popup_obj);
+    lv_obj_set_size(list_container, lv_pct(100), 300);
+    lv_obj_set_flex_grow(list_container, 1);
+    lv_obj_set_style_bg_color(list_container, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_border_width(list_container, 0, 0);
+    lv_obj_set_style_radius(list_container, 8, 0);
+    lv_obj_set_style_pad_all(list_container, 8, 0);
+    lv_obj_set_flex_flow(list_container, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list_container, 6, 0);
+    
+    if (adhoc_probe_count == 0) {
+        lv_obj_t *empty_label = lv_label_create(list_container);
+        lv_label_set_text(empty_label, "No probes found.\nRun Network Observer first\nto collect probe requests.");
+        lv_obj_set_style_text_font(empty_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(empty_label, lv_color_hex(0x666666), 0);
+        lv_obj_set_style_text_align(empty_label, LV_TEXT_ALIGN_CENTER, 0);
+    } else {
+        for (int i = 0; i < adhoc_probe_count; i++) {
+            lv_obj_t *btn = lv_btn_create(list_container);
+            lv_obj_set_size(btn, lv_pct(100), 40);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
+            lv_obj_set_style_bg_color(btn, COLOR_MATERIAL_ORANGE, LV_STATE_PRESSED);
+            lv_obj_set_style_radius(btn, 6, 0);
+            lv_obj_add_event_cb(btn, adhoc_probe_click_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+            
+            lv_obj_t *ssid_label = lv_label_create(btn);
+            lv_label_set_text_fmt(ssid_label, "%d. %s", i + 1, adhoc_probes[i]);
+            lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_14, 0);
+            lv_obj_center(ssid_label);
+        }
+    }
+    
+    // Close button
+    lv_obj_t *close_btn = lv_btn_create(adhoc_probes_popup_obj);
+    lv_obj_set_size(close_btn, lv_pct(100), 45);
+    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(close_btn, 8, 0);
+    lv_obj_add_event_cb(close_btn, adhoc_html_popup_close_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *close_label = lv_label_create(close_btn);
+    lv_label_set_text(close_label, "Close");
+    lv_obj_set_style_text_font(close_label, &lv_font_montserrat_16, 0);
+    lv_obj_center(close_label);
+}
+
+static void adhoc_probe_click_cb(lv_event_t *e)
+{
+    adhoc_selected_probe_idx = (int)(intptr_t)lv_event_get_user_data(e);
+    ESP_LOGI(TAG, "Selected probe: %s", adhoc_probes[adhoc_selected_probe_idx]);
+    
+    // Close probes popup
+    if (adhoc_probes_popup_overlay) {
+        lv_obj_del(adhoc_probes_popup_overlay);
+        adhoc_probes_popup_overlay = NULL;
+        adhoc_probes_popup_obj = NULL;
+    }
+    
+    // Show HTML selection popup
+    // Fetch HTML files from UART1 (SD card)
+    karma2_fetch_html_files();
+    
+    lv_obj_t *container = internal_container;
+    if (!container) return;
+    
+    adhoc_html_popup_overlay = lv_obj_create(container);
+    lv_obj_remove_style_all(adhoc_html_popup_overlay);
+    lv_obj_set_size(adhoc_html_popup_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(adhoc_html_popup_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(adhoc_html_popup_overlay, LV_OPA_70, 0);
+    lv_obj_clear_flag(adhoc_html_popup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    
+    adhoc_html_popup_obj = lv_obj_create(adhoc_html_popup_overlay);
+    lv_obj_set_size(adhoc_html_popup_obj, 400, 350);
+    lv_obj_center(adhoc_html_popup_obj);
+    lv_obj_set_style_bg_color(adhoc_html_popup_obj, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_border_color(adhoc_html_popup_obj, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_border_width(adhoc_html_popup_obj, 2, 0);
+    lv_obj_set_style_radius(adhoc_html_popup_obj, 12, 0);
+    lv_obj_set_style_pad_all(adhoc_html_popup_obj, 20, 0);
+    lv_obj_set_flex_flow(adhoc_html_popup_obj, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(adhoc_html_popup_obj, 15, 0);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(adhoc_html_popup_obj);
+    lv_label_set_text_fmt(title, "Start Portal: %s", adhoc_probes[adhoc_selected_probe_idx]);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_TEAL, 0);
+    
+    // HTML selection label
+    lv_obj_t *html_label = lv_label_create(adhoc_html_popup_obj);
+    lv_label_set_text(html_label, "Select portal HTML template:");
+    lv_obj_set_style_text_font(html_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(html_label, lv_color_hex(0xCCCCCC), 0);
+    
+    // Dropdown for HTML files
+    adhoc_html_dropdown = lv_dropdown_create(adhoc_html_popup_obj);
+    lv_obj_set_width(adhoc_html_dropdown, lv_pct(100));
+    lv_obj_set_style_bg_color(adhoc_html_dropdown, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_text_color(adhoc_html_dropdown, lv_color_hex(0xFFFFFF), 0);
+    
+    // Populate dropdown
+    if (karma2_html_count > 0) {
+        char options[512] = "";
+        for (int i = 0; i < karma2_html_count; i++) {
+            if (i > 0) strcat(options, "\n");
+            strncat(options, karma2_html_files[i], sizeof(options) - strlen(options) - 1);
+        }
+        lv_dropdown_set_options(adhoc_html_dropdown, options);
+    } else {
+        lv_dropdown_set_options(adhoc_html_dropdown, "default.html");
+    }
+    
+    // Button container
+    lv_obj_t *btn_cont = lv_obj_create(adhoc_html_popup_obj);
+    lv_obj_set_size(btn_cont, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_cont, 0, 0);
+    lv_obj_set_style_pad_all(btn_cont, 0, 0);
+    lv_obj_set_flex_flow(btn_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(btn_cont, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Cancel button
+    lv_obj_t *cancel_btn = lv_btn_create(btn_cont);
+    lv_obj_set_size(cancel_btn, 150, 50);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(cancel_btn, 8, 0);
+    lv_obj_add_event_cb(cancel_btn, adhoc_html_popup_close_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *cancel_label = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_label, "Cancel");
+    lv_obj_set_style_text_font(cancel_label, &lv_font_montserrat_16, 0);
+    lv_obj_center(cancel_label);
+    
+    // Start button
+    lv_obj_t *start_btn = lv_btn_create(btn_cont);
+    lv_obj_set_size(start_btn, 150, 50);
+    lv_obj_set_style_bg_color(start_btn, COLOR_MATERIAL_GREEN, 0);
+    lv_obj_set_style_radius(start_btn, 8, 0);
+    lv_obj_add_event_cb(start_btn, adhoc_html_select_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *start_label = lv_label_create(start_btn);
+    lv_label_set_text(start_label, LV_SYMBOL_PLAY " Start");
+    lv_obj_set_style_text_font(start_label, &lv_font_montserrat_16, 0);
+    lv_obj_center(start_label);
+}
+
+static void adhoc_html_popup_close_cb(lv_event_t *e)
+{
+    (void)e;
+    
+    if (adhoc_probes_popup_overlay) {
+        lv_obj_del(adhoc_probes_popup_overlay);
+        adhoc_probes_popup_overlay = NULL;
+        adhoc_probes_popup_obj = NULL;
+    }
+    
+    if (adhoc_html_popup_overlay) {
+        lv_obj_del(adhoc_html_popup_overlay);
+        adhoc_html_popup_overlay = NULL;
+        adhoc_html_popup_obj = NULL;
+        adhoc_html_dropdown = NULL;
+    }
+}
+
+static void adhoc_html_select_cb(lv_event_t *e)
+{
+    (void)e;
+    
+    // Get selected HTML file
+    int html_idx = lv_dropdown_get_selected(adhoc_html_dropdown);
+    const char *ssid = adhoc_probes[adhoc_selected_probe_idx];
+    
+    if (karma2_html_count > 0 && html_idx < karma2_html_count) {
+        strncpy(portal_selected_html, karma2_html_files[html_idx], sizeof(portal_selected_html) - 1);
+    } else {
+        strcpy(portal_selected_html, "default.html");
+    }
+    
+    ESP_LOGI(TAG, "Starting captive portal - SSID: %s, HTML: %s", ssid, portal_selected_html);
+    
+    // Close HTML popup
+    adhoc_html_popup_close_cb(e);
+    
+    // Start captive portal on built-in C6
+    esp_err_t err = start_captive_portal(ssid);
+    if (err == ESP_OK) {
+        portal_active = true;
+        portal_background_mode = true;
+        
+        // Refresh the Ad Hoc Portal page to show active state
+        if (adhoc_portal_page) {
+            lv_obj_del(adhoc_portal_page);
+            adhoc_portal_page = NULL;
+        }
+        show_adhoc_portal_page();
+    } else {
+        ESP_LOGE(TAG, "Failed to start captive portal: %s", esp_err_to_name(err));
+    }
+}
+
+static void show_adhoc_portal_page(void)
+{
+    ESP_LOGI(TAG, "Showing Ad Hoc Portal page, portal_active=%d", portal_active);
+    
+    lv_obj_t *container = internal_container;
+    if (!container) {
+        ESP_LOGE(TAG, "Internal container not initialized!");
+        return;
+    }
+    
+    // Hide tiles
+    if (internal_ctx.tiles) {
+        lv_obj_add_flag(internal_ctx.tiles, LV_OBJ_FLAG_HIDDEN);
+    }
+    
+    // If page exists, just show it
+    if (adhoc_portal_page) {
+        lv_obj_clear_flag(adhoc_portal_page, LV_OBJ_FLAG_HIDDEN);
+        internal_ctx.current_visible_page = adhoc_portal_page;
+        return;
+    }
+    
+    // Create page
+    adhoc_portal_page = lv_obj_create(container);
+    lv_obj_set_size(adhoc_portal_page, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(adhoc_portal_page, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_border_width(adhoc_portal_page, 0, 0);
+    lv_obj_set_style_pad_all(adhoc_portal_page, 15, 0);
+    lv_obj_set_flex_flow(adhoc_portal_page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(adhoc_portal_page, 10, 0);
+    
+    // Header with back button
+    lv_obj_t *header = lv_obj_create(adhoc_portal_page);
+    lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_set_style_pad_all(header, 0, 0);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(header, 15, 0);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // Back button
+    lv_obj_t *back_btn = lv_btn_create(header);
+    lv_obj_set_size(back_btn, 48, 40);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(back_btn, 8, 0);
+    lv_obj_add_event_cb(back_btn, adhoc_portal_back_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *back_icon = lv_label_create(back_btn);
+    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(back_icon, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(back_icon);
+    
+    // Title
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "Ad Hoc Portal & Karma");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_ORANGE, 0);
+    
+    // =====================================================
+    // PORTAL ACTIVE VIEW
+    // =====================================================
+    if (portal_active) {
+        ESP_LOGI(TAG, "Portal is ACTIVE, showing status view");
+        
+        // Status box
+        lv_obj_t *status_box = lv_obj_create(adhoc_portal_page);
+        lv_obj_set_size(status_box, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(status_box, lv_color_hex(0x1B5E20), 0);  // Dark green
+        lv_obj_set_style_border_width(status_box, 0, 0);
+        lv_obj_set_style_radius(status_box, 8, 0);
+        lv_obj_set_style_pad_all(status_box, 15, 0);
+        lv_obj_set_flex_flow(status_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(status_box, 5, 0);
+        lv_obj_clear_flag(status_box, LV_OBJ_FLAG_SCROLLABLE);
+        
+        lv_obj_t *status_title = lv_label_create(status_box);
+        lv_label_set_text(status_title, LV_SYMBOL_OK " Portal Active");
+        lv_obj_set_style_text_font(status_title, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(status_title, COLOR_MATERIAL_GREEN, 0);
+        
+        // SSID
+        lv_obj_t *ssid_label = lv_label_create(status_box);
+        lv_label_set_text_fmt(ssid_label, "SSID: %s", portal_ssid ? portal_ssid : "Unknown");
+        lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xFFFFFF), 0);
+        
+        // HTML file
+        lv_obj_t *html_label = lv_label_create(status_box);
+        lv_label_set_text_fmt(html_label, "HTML: %s", strlen(portal_selected_html) > 0 ? portal_selected_html : "default");
+        lv_obj_set_style_text_font(html_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(html_label, lv_color_hex(0xCCCCCC), 0);
+        
+        // Started by
+        lv_obj_t *started_label = lv_label_create(status_box);
+        lv_label_set_text_fmt(started_label, "Started by: %s", 
+            portal_started_by_uart == 1 ? "UART1" : 
+            portal_started_by_uart == 2 ? "UART2" : "Internal");
+        lv_obj_set_style_text_font(started_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(started_label, lv_color_hex(0xAAAAAA), 0);
+        
+        // Data container (shows client connections, passwords)
+        lv_obj_t *data_box = lv_obj_create(adhoc_portal_page);
+        lv_obj_set_size(data_box, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_grow(data_box, 1);
+        lv_obj_set_style_bg_color(data_box, lv_color_hex(0x252525), 0);
+        lv_obj_set_style_border_width(data_box, 0, 0);
+        lv_obj_set_style_radius(data_box, 8, 0);
+        lv_obj_set_style_pad_all(data_box, 15, 0);
+        
+        adhoc_portal_data_label = lv_label_create(data_box);
+        lv_label_set_text(adhoc_portal_data_label, "Waiting for client connections...\n\nPasswords will appear here.");
+        lv_obj_set_style_text_font(adhoc_portal_data_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(adhoc_portal_data_label, lv_color_hex(0x888888), 0);
+        lv_label_set_long_mode(adhoc_portal_data_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(adhoc_portal_data_label, lv_pct(100));
+        
+        // Also update karma2_attack_status_label to point here for HTTP handler updates
+        karma2_attack_status_label = adhoc_portal_data_label;
+        
+        // STOP button
+        lv_obj_t *stop_btn = lv_btn_create(adhoc_portal_page);
+        lv_obj_set_size(stop_btn, lv_pct(100), 55);
+        lv_obj_set_style_bg_color(stop_btn, COLOR_MATERIAL_RED, 0);
+        lv_obj_set_style_radius(stop_btn, 8, 0);
+        lv_obj_add_event_cb(stop_btn, adhoc_portal_stop_cb, LV_EVENT_CLICKED, NULL);
+        
+        lv_obj_t *stop_label = lv_label_create(stop_btn);
+        lv_label_set_text(stop_label, LV_SYMBOL_CLOSE " STOP PORTAL");
+        lv_obj_set_style_text_font(stop_label, &lv_font_montserrat_18, 0);
+        lv_obj_center(stop_label);
+        
+    } else {
+        // =====================================================
+        // PORTAL INACTIVE VIEW
+        // =====================================================
+        ESP_LOGI(TAG, "Portal is INACTIVE, showing probe selection view");
+        
+        // Info box
+        lv_obj_t *info_box = lv_obj_create(adhoc_portal_page);
+        lv_obj_set_size(info_box, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(info_box, lv_color_hex(0x252525), 0);
+        lv_obj_set_style_border_width(info_box, 0, 0);
+        lv_obj_set_style_radius(info_box, 8, 0);
+        lv_obj_set_style_pad_all(info_box, 15, 0);
+        lv_obj_clear_flag(info_box, LV_OBJ_FLAG_SCROLLABLE);
+        
+        lv_obj_t *info_label = lv_label_create(info_box);
+        if (hw_config == 1) {
+            lv_label_set_text(info_label, 
+                "Start a Karma captive portal using probe requests\n"
+                "collected by Network Observer.\n\n"
+                "Kraken mode: Probes from both UART1 and UART2\n"
+                "will be combined (duplicates removed).");
+        } else {
+            lv_label_set_text(info_label, 
+                "Start a Karma captive portal using probe requests\n"
+                "collected by Network Observer.\n\n"
+                "Monster mode: Probes from UART1 only.");
+        }
+        lv_obj_set_style_text_font(info_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(info_label, lv_color_hex(0xAAAAAA), 0);
+        lv_label_set_long_mode(info_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(info_label, lv_pct(100));
+        
+        // Show Probes button (NO Start/Stop Sniffer buttons!)
+        lv_obj_t *probes_btn = lv_btn_create(adhoc_portal_page);
+        lv_obj_set_size(probes_btn, lv_pct(100), 55);
+        lv_obj_set_style_bg_color(probes_btn, COLOR_MATERIAL_CYAN, 0);
+        lv_obj_set_style_radius(probes_btn, 8, 0);
+        lv_obj_add_event_cb(probes_btn, adhoc_show_probes_cb, LV_EVENT_CLICKED, NULL);
+        
+        lv_obj_t *probes_label = lv_label_create(probes_btn);
+        lv_label_set_text(probes_label, LV_SYMBOL_LIST " Show Probes");
+        lv_obj_set_style_text_font(probes_label, &lv_font_montserrat_18, 0);
+        lv_obj_center(probes_label);
+        
+        // Status label
+        adhoc_portal_status_label = lv_label_create(adhoc_portal_page);
+        lv_label_set_text(adhoc_portal_status_label, "Select a probe request to start captive portal");
+        lv_obj_set_style_text_font(adhoc_portal_status_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(adhoc_portal_status_label, lv_color_hex(0x888888), 0);
+    }
+    
+    internal_ctx.current_visible_page = adhoc_portal_page;
 }
 
 //==================================================================================
@@ -9978,34 +10715,35 @@ static void karma2_attack_background_cb(lv_event_t *e)
 
 static void show_portal_data_page(void)
 {
-    if (compromised_data_page) {
-        lv_obj_del(compromised_data_page);
-        compromised_data_page = NULL;
-    }
-    
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A1A), 0);
-    
-    create_status_bar();
-    create_tab_bar();
-    update_portal_icon();
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
     
     lv_obj_t *container = get_current_tab_container();
     if (!container) return;
     
+    hide_all_pages(ctx);
+    
+    // Delete and recreate to refresh data
+    if (ctx->portal_data_page) {
+        lv_obj_del(ctx->portal_data_page);
+        ctx->portal_data_page = NULL;
+    }
+    
     // Create page
-    compromised_data_page = lv_obj_create(container);
+    ctx->portal_data_page = lv_obj_create(container);
     lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(compromised_data_page, lv_pct(100), scr_height - 85);
-    lv_obj_align(compromised_data_page, LV_ALIGN_TOP_MID, 0, 85);
-    lv_obj_set_style_bg_color(compromised_data_page, lv_color_hex(0x1A1A1A), 0);
-    lv_obj_set_style_border_width(compromised_data_page, 0, 0);
-    lv_obj_set_style_pad_all(compromised_data_page, 10, 0);
-    lv_obj_set_flex_flow(compromised_data_page, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(compromised_data_page, 8, 0);
+    lv_obj_set_size(ctx->portal_data_page, lv_pct(100), scr_height - 85);
+    lv_obj_align(ctx->portal_data_page, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(ctx->portal_data_page, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_border_width(ctx->portal_data_page, 0, 0);
+    lv_obj_set_style_pad_all(ctx->portal_data_page, 10, 0);
+    lv_obj_set_flex_flow(ctx->portal_data_page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(ctx->portal_data_page, 8, 0);
+    
+    ctx->current_visible_page = ctx->portal_data_page;
     
     // Header
-    lv_obj_t *header = lv_obj_create(compromised_data_page);
+    lv_obj_t *header = lv_obj_create(ctx->portal_data_page);
     lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(header, 0, 0);
@@ -10032,13 +10770,13 @@ static void show_portal_data_page(void)
     lv_obj_set_style_text_color(title, COLOR_MATERIAL_TEAL, 0);
     
     // Status label
-    lv_obj_t *status_label = lv_label_create(compromised_data_page);
+    lv_obj_t *status_label = lv_label_create(ctx->portal_data_page);
     lv_label_set_text(status_label, "Loading...");
     lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(status_label, lv_color_hex(0x888888), 0);
     
     // Scrollable list container
-    lv_obj_t *list_container = lv_obj_create(compromised_data_page);
+    lv_obj_t *list_container = lv_obj_create(ctx->portal_data_page);
     lv_obj_set_size(list_container, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(list_container, 1);
     lv_obj_set_style_bg_color(list_container, lv_color_hex(0x252525), 0);
@@ -10048,21 +10786,27 @@ static void show_portal_data_page(void)
     lv_obj_set_flex_flow(list_container, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list_container, 8, 0);
     
+    // Flush RX buffer to clear any boot messages from ESP32C5
+    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_flush_input(uart_port);
+    
     // Send UART command and read response
     uart_send_command_for_tab("show_pass portal");
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(1000));  // Wait for ESP32C5 to process and read from SD
     
     static char rx_buffer[4096];
     int total_len = 0;
-    int retries = 5;
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    int retries = 10;
+    int empty_reads = 0;
     
-    while (retries-- > 0) {
+    while (retries-- > 0 && empty_reads < 3) {
         int len = uart_read_bytes(uart_port, rx_buffer + total_len, sizeof(rx_buffer) - total_len - 1, pdMS_TO_TICKS(200));
         if (len > 0) {
             total_len += len;
+            empty_reads = 0;  // Reset on successful read
+        } else {
+            empty_reads++;  // Only break after 3 consecutive empty reads
         }
-        if (len <= 0) break;
     }
     rx_buffer[total_len] = '\0';
     
@@ -10155,34 +10899,35 @@ static void show_portal_data_page(void)
 
 static void show_handshakes_page(void)
 {
-    if (compromised_data_page) {
-        lv_obj_del(compromised_data_page);
-        compromised_data_page = NULL;
-    }
-    
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A1A), 0);
-    
-    create_status_bar();
-    create_tab_bar();
-    update_portal_icon();
+    tab_context_t *ctx = get_current_ctx();
+    if (!ctx) return;
     
     lv_obj_t *container = get_current_tab_container();
     if (!container) return;
     
+    hide_all_pages(ctx);
+    
+    // Delete and recreate to refresh data
+    if (ctx->handshakes_page) {
+        lv_obj_del(ctx->handshakes_page);
+        ctx->handshakes_page = NULL;
+    }
+    
     // Create page
-    compromised_data_page = lv_obj_create(container);
+    ctx->handshakes_page = lv_obj_create(container);
     lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(compromised_data_page, lv_pct(100), scr_height - 85);
-    lv_obj_align(compromised_data_page, LV_ALIGN_TOP_MID, 0, 85);
-    lv_obj_set_style_bg_color(compromised_data_page, lv_color_hex(0x1A1A1A), 0);
-    lv_obj_set_style_border_width(compromised_data_page, 0, 0);
-    lv_obj_set_style_pad_all(compromised_data_page, 10, 0);
-    lv_obj_set_flex_flow(compromised_data_page, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(compromised_data_page, 8, 0);
+    lv_obj_set_size(ctx->handshakes_page, lv_pct(100), scr_height - 85);
+    lv_obj_align(ctx->handshakes_page, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(ctx->handshakes_page, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_border_width(ctx->handshakes_page, 0, 0);
+    lv_obj_set_style_pad_all(ctx->handshakes_page, 10, 0);
+    lv_obj_set_flex_flow(ctx->handshakes_page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(ctx->handshakes_page, 8, 0);
+    
+    ctx->current_visible_page = ctx->handshakes_page;
     
     // Header
-    lv_obj_t *header = lv_obj_create(compromised_data_page);
+    lv_obj_t *header = lv_obj_create(ctx->handshakes_page);
     lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(header, 0, 0);
@@ -10209,13 +10954,13 @@ static void show_handshakes_page(void)
     lv_obj_set_style_text_color(title, COLOR_MATERIAL_PURPLE, 0);
     
     // Status label
-    lv_obj_t *status_label = lv_label_create(compromised_data_page);
+    lv_obj_t *status_label = lv_label_create(ctx->handshakes_page);
     lv_label_set_text(status_label, "Loading...");
     lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(status_label, lv_color_hex(0x888888), 0);
     
     // Scrollable list container
-    lv_obj_t *list_container = lv_obj_create(compromised_data_page);
+    lv_obj_t *list_container = lv_obj_create(ctx->handshakes_page);
     lv_obj_set_size(list_container, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(list_container, 1);
     lv_obj_set_style_bg_color(list_container, lv_color_hex(0x252525), 0);
@@ -10225,21 +10970,27 @@ static void show_handshakes_page(void)
     lv_obj_set_flex_flow(list_container, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list_container, 8, 0);
     
+    // Flush RX buffer to clear any boot messages from ESP32C5
+    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_flush_input(uart_port);
+    
     // Send UART command and read response
     uart_send_command_for_tab("list_dir /sdcard/lab/handshakes");
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(1000));  // Wait for ESP32C5 to process and read from SD
     
     static char rx_buffer[4096];
     int total_len = 0;
-    int retries = 5;
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    int retries = 10;
+    int empty_reads = 0;
     
-    while (retries-- > 0) {
+    while (retries-- > 0 && empty_reads < 3) {
         int len = uart_read_bytes(uart_port, rx_buffer + total_len, sizeof(rx_buffer) - total_len - 1, pdMS_TO_TICKS(200));
         if (len > 0) {
             total_len += len;
+            empty_reads = 0;  // Reset on successful read
+        } else {
+            empty_reads++;  // Only break after 3 consecutive empty reads
         }
-        if (len <= 0) break;
     }
     rx_buffer[total_len] = '\0';
     
@@ -10408,10 +11159,11 @@ static bool parse_deauth_line(const char *line, deauth_entry_t *entry)
 // Deauth detector monitor task
 static void deauth_detector_task(void *arg)
 {
-    (void)arg;
+    // Get context passed to task
+    tab_context_t *ctx = (tab_context_t *)arg;
     
-    // Save the tab that started this task
-    int task_tab = current_tab;
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
     uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
     const char *uart_name = (task_tab == 1) ? "UART2" : "UART1";
     
@@ -10421,7 +11173,8 @@ static void deauth_detector_task(void *arg)
     static char line_buffer[256];
     int line_pos = 0;
     
-    while (deauth_detector_running) {
+    // Use context's flag
+    while (ctx && ctx->deauth_detector_running) {
         int len = uart_read_bytes(uart_port, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
@@ -10479,7 +11232,14 @@ static void deauth_detector_start_cb(lv_event_t *e)
     uart_send_command_for_tab("deauth_detector");
     
     deauth_detector_running = true;
-    xTaskCreate(deauth_detector_task, "deauth_det", 4096, NULL, 5, &deauth_detector_task_handle);
+    
+    // Also mark in context
+    tab_context_t *ctx = get_current_ctx();
+    if (ctx) {
+        ctx->deauth_detector_running = true;
+    }
+    
+    xTaskCreate(deauth_detector_task, "deauth_det", 4096, (void*)ctx, 5, &deauth_detector_task_handle);
     
     // Update button states
     lv_obj_add_state(deauth_start_btn, LV_STATE_DISABLED);
@@ -10496,6 +11256,13 @@ static void deauth_detector_stop_cb(lv_event_t *e)
     uart_send_command_for_tab("stop");
     
     deauth_detector_running = false;
+    
+    // Also clear in context
+    tab_context_t *stop_ctx = get_current_ctx();
+    if (stop_ctx) {
+        stop_ctx->deauth_detector_running = false;
+    }
+    
     if (deauth_detector_task_handle != NULL) {
         vTaskDelay(pdMS_TO_TICKS(100));
         deauth_detector_task_handle = NULL;
@@ -10515,6 +11282,13 @@ static void deauth_detector_back_btn_event_cb(lv_event_t *e)
     if (deauth_detector_running) {
         uart_send_command_for_tab("stop");
         deauth_detector_running = false;
+        
+        // Also clear in context
+        tab_context_t *back_ctx = get_current_ctx();
+        if (back_ctx) {
+            back_ctx->deauth_detector_running = false;
+        }
+        
         if (deauth_detector_task_handle != NULL) {
             vTaskDelay(pdMS_TO_TICKS(100));
             deauth_detector_task_handle = NULL;
@@ -10824,10 +11598,11 @@ static void airtag_scan_back_btn_event_cb(lv_event_t *e)
 
 static void airtag_scan_task(void *arg)
 {
-    (void)arg;
+    // Get context passed to task
+    tab_context_t *ctx = (tab_context_t *)arg;
     
-    // Save the tab that started this task
-    int task_tab = current_tab;
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
     uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
     const char *uart_name = (task_tab == 1) ? "UART2" : "UART1";
     
@@ -10837,7 +11612,8 @@ static void airtag_scan_task(void *arg)
     static char line_buffer[64];
     int line_pos = 0;
     
-    while (airtag_scanning) {
+    // Use context's flag
+    while (ctx && ctx->airtag_scanning) {
         int len = uart_read_bytes(uart_port, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
@@ -11003,7 +11779,13 @@ static void show_airtag_scan_page(void)
     ESP_LOGI(TAG, "Starting AirTag scan");
     uart_send_command_for_tab("scan_airtag");
     airtag_scanning = true;
-    xTaskCreate(airtag_scan_task, "airtag_scan", 4096, NULL, 5, &airtag_scan_task_handle);
+    
+    // Also mark in context
+    if (ctx) {
+        ctx->airtag_scanning = true;
+    }
+    
+    xTaskCreate(airtag_scan_task, "airtag_scan", 4096, (void*)ctx, 5, &airtag_scan_task_handle);
     
     // Set current visible page
     ctx->current_visible_page = ctx->bt_airtag_page;
@@ -11387,10 +12169,11 @@ static void bt_locator_tracking_back_btn_event_cb(lv_event_t *e)
 
 static void bt_locator_tracking_task(void *arg)
 {
-    (void)arg;
+    // Get context passed to task
+    tab_context_t *ctx = (tab_context_t *)arg;
     
-    // Save the tab that started this task
-    int task_tab = current_tab;
+    // Determine UART from context
+    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
     uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
     const char *uart_name = (task_tab == 1) ? "UART2" : "UART1";
     
@@ -11403,7 +12186,8 @@ static void bt_locator_tracking_task(void *arg)
     int lines_parsed = 0;
     int matches_found = 0;
     
-    while (bt_locator_tracking) {
+    // Use context's flag
+    while (ctx && ctx->bt_locator_tracking) {
         int len = uart_read_bytes(uart_port, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
@@ -11618,7 +12402,14 @@ static void show_bt_locator_page(int device_idx)
     ESP_LOGI(TAG, "[BT_LOC] Command sent, starting monitor task");
     
     bt_locator_tracking = true;
-    xTaskCreate(bt_locator_tracking_task, "bt_locator", 4096, NULL, 5, &bt_locator_task_handle);
+    
+    // Also mark in context
+    tab_context_t *loc_ctx = get_current_ctx();
+    if (loc_ctx) {
+        loc_ctx->bt_locator_tracking = true;
+    }
+    
+    xTaskCreate(bt_locator_tracking_task, "bt_locator", 4096, (void*)loc_ctx, 5, &bt_locator_task_handle);
     ESP_LOGI(TAG, "[BT_LOC] Monitor task created, tracking_page=%p, rssi_label=%p", 
              (void*)bt_locator_page, (void*)bt_locator_rssi_label);
     
@@ -11973,9 +12764,12 @@ static void start_kraken_scanning(void)
     
     kraken_scanning_active = true;
     
-    // Create the background scanning task
+    // Also mark in uart2 context
+    uart2_ctx.observer_running = true;
+    
+    // Create the background scanning task (always for UART2)
     if (kraken_scan_task_handle == NULL) {
-        xTaskCreate(kraken_scan_task, "kraken_scan", 8192, NULL, 5, &kraken_scan_task_handle);
+        xTaskCreate(kraken_scan_task, "kraken_scan", 8192, (void*)&uart2_ctx, 5, &kraken_scan_task_handle);
         ESP_LOGI(TAG, "[UART2] Kraken background scanning started");
     }
     
@@ -11990,6 +12784,9 @@ static void stop_kraken_scanning(void)
     }
     
     kraken_scanning_active = false;
+    
+    // Also clear in uart2 context
+    uart2_ctx.observer_running = false;
     
     // Notify task to stop
     if (kraken_scan_task_handle != NULL) {
@@ -12010,12 +12807,17 @@ static void stop_kraken_scanning(void)
 // Kraken background scanning task - continuously scans networks on UART2
 static void kraken_scan_task(void *arg)
 {
+    // Get context passed to task (should be uart2_ctx)
+    tab_context_t *ctx = (tab_context_t *)arg;
+    
     ESP_LOGI(TAG, "[UART2] Kraken scan task running");
     
-    // Check if PSRAM buffers are allocated
-    if (!observer_rx_buffer || !observer_line_buffer || !observer_networks) {
+    // Check if PSRAM buffers are allocated (use context buffers if available)
+    observer_network_t *obs_networks = (ctx && ctx->observer_networks) ? ctx->observer_networks : observer_networks;
+    if (!observer_rx_buffer || !observer_line_buffer || !obs_networks) {
         ESP_LOGE(TAG, "[UART2] PSRAM buffers not allocated!");
         kraken_scan_task_handle = NULL;
+        if (ctx) ctx->observer_running = false;
         vTaskDelete(NULL);
         return;
     }
