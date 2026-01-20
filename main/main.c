@@ -103,6 +103,10 @@ static const char *TAG = "wifi_scanner";
 #define TAB_COLOR_INTERNAL_ACTIVE 0x9C27B0  // Purple
 #define TAB_COLOR_INTERNAL_INACTIVE 0x4A148C  // Dark Purple
 
+// Screenshot feature - set to false to disable screenshot on LABORATORIUM tap
+#define SCREENSHOT_ENABLED true
+#define SCREENSHOT_DIR "/sdcard/screenshots"
+
 // WiFi network info structure
 typedef struct {
     int index;
@@ -952,6 +956,8 @@ static void back_btn_event_cb(lv_event_t *e);
 static void network_checkbox_event_cb(lv_event_t *e);
 static void attack_tile_event_cb(lv_event_t *e);
 static void create_status_bar(void);
+static void screenshot_click_cb(lv_event_t *e);
+static void save_screenshot_to_sd(void);
 static void show_global_attacks_page(void);
 static void global_attack_tile_event_cb(lv_event_t *e);
 static void observer_back_btn_event_cb(lv_event_t *e);
@@ -1888,6 +1894,186 @@ static lv_obj_t *create_small_tile(lv_obj_t *parent, const char *icon, const cha
     return tile;
 }
 
+// ============================================================================
+// SCREENSHOT FUNCTIONALITY
+// ============================================================================
+#if SCREENSHOT_ENABLED
+// lv_snapshot.h is included via lvgl.h when LV_USE_SNAPSHOT is enabled
+
+// Global pointer to title label for visual feedback
+static lv_obj_t *screenshot_title_label = NULL;
+
+// Save screenshot to SD card as BMP
+static void save_screenshot_to_sd(void)
+{
+    ESP_LOGI(TAG, "Taking screenshot...");
+    
+    // Ensure screenshots directory exists
+    struct stat st;
+    if (stat(SCREENSHOT_DIR, &st) != 0) {
+        ESP_LOGI(TAG, "Creating screenshots directory...");
+        if (mkdir(SCREENSHOT_DIR, 0755) != 0) {
+            ESP_LOGE(TAG, "Failed to create screenshots directory: %s", strerror(errno));
+            return;
+        }
+    }
+    
+    // Get current screen
+    lv_obj_t *scr = lv_scr_act();
+    if (!scr) {
+        ESP_LOGE(TAG, "No active screen!");
+        return;
+    }
+    
+    // Take snapshot - RGB565 format (matches display)
+    lv_draw_buf_t *snapshot = lv_snapshot_take(scr, LV_COLOR_FORMAT_RGB565);
+    if (!snapshot) {
+        ESP_LOGE(TAG, "Failed to take snapshot!");
+        // Visual feedback - flash red
+        if (screenshot_title_label) {
+            lv_obj_set_style_text_color(screenshot_title_label, COLOR_MATERIAL_RED, 0);
+            lv_refr_now(NULL);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            lv_obj_set_style_text_color(screenshot_title_label, lv_color_make(255, 255, 255), 0);
+        }
+        return;
+    }
+    
+    // Generate filename with timestamp
+    time_t now;
+    struct tm timeinfo;
+    char filename[64];
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    snprintf(filename, sizeof(filename), "%s/scr_%04d%02d%02d_%02d%02d%02d.bmp",
+             SCREENSHOT_DIR,
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    
+    ESP_LOGI(TAG, "Saving screenshot to: %s", filename);
+    
+    // Get image dimensions
+    uint32_t width = snapshot->header.w;
+    uint32_t height = snapshot->header.h;
+    uint32_t stride = snapshot->header.stride;
+    uint8_t *data = snapshot->data;
+    
+    ESP_LOGI(TAG, "Snapshot: %lux%lu, stride=%lu", width, height, stride);
+    
+    // Open file for writing
+    FILE *f = fopen(filename, "wb");
+    if (!f) {
+        ESP_LOGE(TAG, "Failed to open file for writing: %s", strerror(errno));
+        lv_draw_buf_destroy(snapshot);
+        // Visual feedback - flash red
+        if (screenshot_title_label) {
+            lv_obj_set_style_text_color(screenshot_title_label, COLOR_MATERIAL_RED, 0);
+            lv_refr_now(NULL);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            lv_obj_set_style_text_color(screenshot_title_label, lv_color_make(255, 255, 255), 0);
+        }
+        return;
+    }
+    
+    // BMP file header (14 bytes)
+    uint32_t row_size = ((width * 2 + 3) / 4) * 4;  // RGB565 = 2 bytes per pixel, padded to 4 bytes
+    uint32_t pixel_data_size = row_size * height;
+    uint32_t file_size = 14 + 40 + 12 + pixel_data_size;  // Header + DIB header + RGB565 masks + data
+    
+    // BMP Header
+    uint8_t bmp_header[14] = {
+        'B', 'M',                                    // Signature
+        (uint8_t)(file_size), (uint8_t)(file_size >> 8),  // File size (little-endian)
+        (uint8_t)(file_size >> 16), (uint8_t)(file_size >> 24),
+        0, 0, 0, 0,                                  // Reserved
+        14 + 40 + 12, 0, 0, 0                        // Pixel data offset (header + DIB + masks)
+    };
+    fwrite(bmp_header, 1, 14, f);
+    
+    // DIB Header (BITMAPINFOHEADER - 40 bytes)
+    uint8_t dib_header[40] = {0};
+    dib_header[0] = 40;  // DIB header size
+    // Width (little-endian)
+    dib_header[4] = (uint8_t)(width);
+    dib_header[5] = (uint8_t)(width >> 8);
+    dib_header[6] = (uint8_t)(width >> 16);
+    dib_header[7] = (uint8_t)(width >> 24);
+    // Height (negative for top-down)
+    int32_t neg_height = -(int32_t)height;
+    dib_header[8] = (uint8_t)(neg_height);
+    dib_header[9] = (uint8_t)(neg_height >> 8);
+    dib_header[10] = (uint8_t)(neg_height >> 16);
+    dib_header[11] = (uint8_t)(neg_height >> 24);
+    // Planes
+    dib_header[12] = 1;
+    dib_header[13] = 0;
+    // Bits per pixel (16 for RGB565)
+    dib_header[14] = 16;
+    dib_header[15] = 0;
+    // Compression (3 = BI_BITFIELDS)
+    dib_header[16] = 3;
+    dib_header[17] = 0;
+    dib_header[18] = 0;
+    dib_header[19] = 0;
+    // Image size
+    dib_header[20] = (uint8_t)(pixel_data_size);
+    dib_header[21] = (uint8_t)(pixel_data_size >> 8);
+    dib_header[22] = (uint8_t)(pixel_data_size >> 16);
+    dib_header[23] = (uint8_t)(pixel_data_size >> 24);
+    // Resolution (2835 pixels/meter = 72 DPI)
+    dib_header[24] = 0x13; dib_header[25] = 0x0B; dib_header[26] = 0; dib_header[27] = 0;
+    dib_header[28] = 0x13; dib_header[29] = 0x0B; dib_header[30] = 0; dib_header[31] = 0;
+    // Colors
+    dib_header[32] = 0; dib_header[33] = 0; dib_header[34] = 0; dib_header[35] = 0;
+    dib_header[36] = 0; dib_header[37] = 0; dib_header[38] = 0; dib_header[39] = 0;
+    fwrite(dib_header, 1, 40, f);
+    
+    // RGB565 bit masks (12 bytes)
+    uint32_t red_mask = 0xF800;     // 5 bits red
+    uint32_t green_mask = 0x07E0;   // 6 bits green
+    uint32_t blue_mask = 0x001F;    // 5 bits blue
+    fwrite(&red_mask, 4, 1, f);
+    fwrite(&green_mask, 4, 1, f);
+    fwrite(&blue_mask, 4, 1, f);
+    
+    // Write pixel data (row by row with padding)
+    uint8_t padding[4] = {0, 0, 0, 0};
+    uint32_t pad_bytes = row_size - (width * 2);
+    
+    for (uint32_t y = 0; y < height; y++) {
+        fwrite(data + (y * stride), 1, width * 2, f);
+        if (pad_bytes > 0) {
+            fwrite(padding, 1, pad_bytes, f);
+        }
+    }
+    
+    fclose(f);
+    lv_draw_buf_destroy(snapshot);
+    
+    ESP_LOGI(TAG, "Screenshot saved successfully: %s", filename);
+    
+    // Visual feedback - flash green briefly
+    if (screenshot_title_label) {
+        lv_obj_set_style_text_color(screenshot_title_label, COLOR_MATERIAL_GREEN, 0);
+        lv_refr_now(NULL);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        lv_obj_set_style_text_color(screenshot_title_label, lv_color_make(255, 255, 255), 0);
+    }
+}
+
+// Screenshot click callback
+static void screenshot_click_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "LABORATORIUM clicked - taking screenshot");
+    save_screenshot_to_sd();
+}
+#else
+// Stubs when screenshot is disabled
+static void save_screenshot_to_sd(void) {}
+static void screenshot_click_cb(lv_event_t *e) { (void)e; }
+#endif
+
 // Create status bar at top of screen (reusable helper)
 static void create_status_bar(void)
 {
@@ -1913,12 +2099,19 @@ static void create_status_bar(void)
     lv_obj_set_style_pad_hor(status_bar, 16, 0);
     lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
     
-    // App title centered
+    // App title centered - clickable for screenshot
     lv_obj_t *app_title = lv_label_create(status_bar);
     lv_label_set_text(app_title, "LABORATORIUM");
     lv_obj_set_style_text_font(app_title, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(app_title, lv_color_make(255, 255, 255), 0);
     lv_obj_align(app_title, LV_ALIGN_CENTER, 0, 0);
+    
+#if SCREENSHOT_ENABLED
+    // Make title clickable for screenshot trigger
+    lv_obj_add_flag(app_title, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(app_title, screenshot_click_cb, LV_EVENT_CLICKED, NULL);
+    screenshot_title_label = app_title;  // Store for visual feedback
+#endif
     
     // Portal icon (shown when portal is active) - left of battery, non-clickable
     portal_icon = lv_label_create(status_bar);
