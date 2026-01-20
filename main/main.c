@@ -10154,6 +10154,57 @@ static void adhoc_portal_stop_cb(lv_event_t *e)
 }
 
 // Fetch probes from UART1, and optionally UART2 if Kraken mode
+// Helper function to parse probes from buffer - format: "1 SSID_Name" (number space SSID)
+static void parse_probes_from_buffer(char *buffer, const char *source_tag)
+{
+    char *line = strtok(buffer, "\n\r");
+    while (line != NULL && adhoc_probe_count < KARMA2_MAX_PROBES * 2) {
+        // Skip leading whitespace
+        char *p = line;
+        while (*p == ' ') p++;
+        
+        // Check if line starts with a number (probe format: "1 SSID_Name")
+        if (isdigit((unsigned char)*p)) {
+            // Skip the number
+            while (isdigit((unsigned char)*p)) p++;
+            
+            // Skip space(s) after number
+            while (*p == ' ') p++;
+            
+            // Rest is SSID
+            if (*p != '\0' && strlen(p) > 0) {
+                char ssid[33] = {0};
+                strncpy(ssid, p, sizeof(ssid) - 1);
+                
+                // Trim trailing whitespace
+                size_t len = strlen(ssid);
+                while (len > 0 && (ssid[len - 1] == '\r' || ssid[len - 1] == '\n' || 
+                       ssid[len - 1] == ' ' || isspace((unsigned char)ssid[len - 1]))) {
+                    ssid[--len] = '\0';
+                }
+                
+                if (strlen(ssid) > 0) {
+                    // Check for duplicates
+                    bool duplicate = false;
+                    for (int i = 0; i < adhoc_probe_count; i++) {
+                        if (strcmp(adhoc_probes[i], ssid) == 0) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (!duplicate) {
+                        memset(adhoc_probes[adhoc_probe_count], 0, 33);
+                        snprintf(adhoc_probes[adhoc_probe_count], 33, "%s", ssid);
+                        ESP_LOGI(TAG, "[%s] Probe %d: %s", source_tag, adhoc_probe_count + 1, adhoc_probes[adhoc_probe_count]);
+                        adhoc_probe_count++;
+                    }
+                }
+            }
+        }
+        line = strtok(NULL, "\n\r");
+    }
+}
+
 static void adhoc_fetch_probes_from_all_uarts(void)
 {
     ESP_LOGI(TAG, "Fetching probes from UART(s)...");
@@ -10161,7 +10212,9 @@ static void adhoc_fetch_probes_from_all_uarts(void)
     adhoc_probe_count = 0;
     memset(adhoc_probes, 0, sizeof(adhoc_probes));
     
-    static char rx_buffer[1024];
+    static char rx_buffer[2048];
+    int total_len = 0;
+    int retries = 0;
     
     // ========== Fetch from UART1 ==========
     uart_flush(UART_NUM);
@@ -10170,45 +10223,26 @@ static void adhoc_fetch_probes_from_all_uarts(void)
     
     vTaskDelay(pdMS_TO_TICKS(500));
     
-    int len = uart_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(300));
-    if (len > 0) {
-        rx_buffer[len] = '\0';
-        ESP_LOGI(TAG, "[UART1] Received %d bytes", len);
-        
-        // Parse probes - format: "1. SSID_NAME"
-        char *line = strtok(rx_buffer, "\n");
-        while (line && adhoc_probe_count < KARMA2_MAX_PROBES * 2) {
-            // Skip empty lines and non-probe lines
-            if (strlen(line) > 3) {
-                char *dot = strchr(line, '.');
-                if (dot && dot[1] == ' ') {
-                    char *start = dot + 2;
-                    // Trim trailing whitespace
-                    char *end = start + strlen(start) - 1;
-                    while (end > start && (*end == '\r' || *end == '\n' || *end == ' ')) {
-                        *end = '\0';
-                        end--;
-                    }
-                    if (strlen(start) > 0 && strlen(start) < 33) {
-                        // Check for duplicates
-                        bool duplicate = false;
-                        for (int i = 0; i < adhoc_probe_count; i++) {
-                            if (strcmp(adhoc_probes[i], start) == 0) {
-                                duplicate = true;
-                                break;
-                            }
-                        }
-                        if (!duplicate) {
-                            strncpy(adhoc_probes[adhoc_probe_count], start, 32);
-                            adhoc_probes[adhoc_probe_count][32] = '\0';
-                            ESP_LOGI(TAG, "[UART1] Probe %d: %s", adhoc_probe_count + 1, adhoc_probes[adhoc_probe_count]);
-                            adhoc_probe_count++;
-                        }
-                    }
-                }
-            }
-            line = strtok(NULL, "\n");
+    // Read with retries to get all data
+    total_len = 0;
+    retries = 10;
+    while (retries-- > 0) {
+        int len = uart_read_bytes(UART_NUM, rx_buffer + total_len, sizeof(rx_buffer) - total_len - 1, pdMS_TO_TICKS(200));
+        if (len > 0) {
+            total_len += len;
         }
+        if (len <= 0) break;
+    }
+    
+    if (total_len > 0) {
+        rx_buffer[total_len] = '\0';
+        ESP_LOGI(TAG, "[UART1] Received %d bytes", total_len);
+        ESP_LOGI(TAG, "[UART1] Raw response:\n%s", rx_buffer);
+        
+        // Parse probes using the same format as karma_show_probes_cb
+        parse_probes_from_buffer(rx_buffer, "UART1");
+    } else {
+        ESP_LOGW(TAG, "[UART1] No response received");
     }
     
     // ========== Fetch from UART2 if Kraken mode ==========
@@ -10221,42 +10255,26 @@ static void adhoc_fetch_probes_from_all_uarts(void)
         
         vTaskDelay(pdMS_TO_TICKS(500));
         
-        len = uart_read_bytes(UART2_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(300));
-        if (len > 0) {
-            rx_buffer[len] = '\0';
-            ESP_LOGI(TAG, "[UART2] Received %d bytes", len);
-            
-            char *line = strtok(rx_buffer, "\n");
-            while (line && adhoc_probe_count < KARMA2_MAX_PROBES * 2) {
-                if (strlen(line) > 3) {
-                    char *dot = strchr(line, '.');
-                    if (dot && dot[1] == ' ') {
-                        char *start = dot + 2;
-                        char *end = start + strlen(start) - 1;
-                        while (end > start && (*end == '\r' || *end == '\n' || *end == ' ')) {
-                            *end = '\0';
-                            end--;
-                        }
-                        if (strlen(start) > 0 && strlen(start) < 33) {
-                            // Check for duplicates
-                            bool duplicate = false;
-                            for (int i = 0; i < adhoc_probe_count; i++) {
-                                if (strcmp(adhoc_probes[i], start) == 0) {
-                                    duplicate = true;
-                                    break;
-                                }
-                            }
-                            if (!duplicate) {
-                                strncpy(adhoc_probes[adhoc_probe_count], start, 32);
-                                adhoc_probes[adhoc_probe_count][32] = '\0';
-                                ESP_LOGI(TAG, "[UART2] Probe %d: %s", adhoc_probe_count + 1, adhoc_probes[adhoc_probe_count]);
-                                adhoc_probe_count++;
-                            }
-                        }
-                    }
-                }
-                line = strtok(NULL, "\n");
+        // Read with retries to get all data
+        total_len = 0;
+        retries = 10;
+        while (retries-- > 0) {
+            int len = uart_read_bytes(UART2_NUM, rx_buffer + total_len, sizeof(rx_buffer) - total_len - 1, pdMS_TO_TICKS(200));
+            if (len > 0) {
+                total_len += len;
             }
+            if (len <= 0) break;
+        }
+        
+        if (total_len > 0) {
+            rx_buffer[total_len] = '\0';
+            ESP_LOGI(TAG, "[UART2] Received %d bytes", total_len);
+            ESP_LOGI(TAG, "[UART2] Raw response:\n%s", rx_buffer);
+            
+            // Parse probes using the same format as karma_show_probes_cb
+            parse_probes_from_buffer(rx_buffer, "UART2");
+        } else {
+            ESP_LOGW(TAG, "[UART2] No response received");
         }
     }
     
