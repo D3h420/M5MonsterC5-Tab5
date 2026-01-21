@@ -3789,8 +3789,9 @@ static void show_arp_poison_page(void)
     
     // Create keyboard (hidden initially, only in manual mode)
     if (!arp_auto_mode) {
-        arp_keyboard = lv_keyboard_create(arp_poison_page);
-        lv_obj_set_size(arp_keyboard, lv_pct(100), 200);
+        arp_keyboard = lv_keyboard_create(container);  // On parent container, not flex page
+        lv_obj_set_size(arp_keyboard, lv_pct(100), 260);  // Larger keys
+        lv_obj_align(arp_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);  // Pin to bottom
         lv_keyboard_set_textarea(arp_keyboard, arp_password_input);
         lv_obj_add_event_cb(arp_keyboard, arp_keyboard_cb, LV_EVENT_ALL, NULL);
         lv_obj_add_flag(arp_keyboard, LV_OBJ_FLAG_HIDDEN);
@@ -8437,7 +8438,7 @@ static void show_phishing_portal_popup(void)
     
     // Create keyboard (hidden by default)
     phishing_portal_keyboard = lv_keyboard_create(phishing_portal_popup_overlay);
-    lv_obj_set_size(phishing_portal_keyboard, lv_pct(100), 200);
+    lv_obj_set_size(phishing_portal_keyboard, lv_pct(100), 260);  // Larger keys
     lv_obj_align(phishing_portal_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_textarea(phishing_portal_keyboard, phishing_portal_ssid_textarea);
     lv_obj_add_event_cb(phishing_portal_keyboard, phishing_portal_keyboard_cb, LV_EVENT_ALL, NULL);
