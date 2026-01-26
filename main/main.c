@@ -716,6 +716,14 @@ static lv_obj_t *splash_label = NULL;
 static lv_timer_t *splash_timer = NULL;
 static int glitch_frame = 0;
 
+// Screen timeout/dimming
+#define SCREEN_TIMEOUT_MS       30000  // 30 seconds
+#define SCREEN_CHECK_INTERVAL   1000   // Check every 1 second
+static uint32_t last_activity_time = 0;
+static bool screen_dimmed = false;
+static lv_timer_t *screen_timeout_timer = NULL;
+static lv_obj_t *sleep_overlay = NULL;  // Invisible overlay to capture wake touch
+
 // LVGL UI elements - observer page
 static lv_obj_t *observer_start_btn = NULL;
 static lv_obj_t *observer_stop_btn = NULL;
@@ -1295,6 +1303,57 @@ static void battery_status_timer_cb(lv_timer_t *timer)
             lv_label_set_text(charging_status_label, LV_SYMBOL_BATTERY_FULL);
             lv_obj_set_style_text_color(charging_status_label, lv_color_make(255, 255, 255), 0);  // White
         }
+    }
+}
+
+// Sleep overlay click callback - wakes screen and removes overlay
+static void sleep_overlay_click_cb(lv_event_t *e)
+{
+    (void)e;
+    
+    if (sleep_overlay) {
+        lv_obj_delete(sleep_overlay);
+        sleep_overlay = NULL;
+    }
+    
+    bsp_display_brightness_set(80);  // Restore brightness
+    screen_dimmed = false;
+    last_activity_time = lv_tick_get();
+    ESP_LOGI(TAG, "Screen woken by touch");
+}
+
+// Screen timeout timer callback - dims screen after inactivity
+static void screen_timeout_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    
+    if (screen_dimmed) return;
+    
+    uint32_t now = lv_tick_get();
+    if ((now - last_activity_time) >= SCREEN_TIMEOUT_MS) {
+        // Create invisible overlay to capture wake touch
+        sleep_overlay = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(sleep_overlay);
+        lv_obj_set_size(sleep_overlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_bg_opa(sleep_overlay, LV_OPA_TRANSP, 0);
+        lv_obj_add_flag(sleep_overlay, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(sleep_overlay, sleep_overlay_click_cb, LV_EVENT_CLICKED, NULL);
+        
+        bsp_display_brightness_set(0);  // Turn off backlight
+        screen_dimmed = true;
+        ESP_LOGI(TAG, "Screen dimmed due to inactivity");
+    }
+}
+
+// Touch activity callback - resets inactivity timer on any touch
+static void touch_activity_cb(lv_event_t *e)
+{
+    (void)e;
+    
+    // Only update activity time if screen is not dimmed
+    // (when dimmed, the overlay handles everything)
+    if (!screen_dimmed) {
+        last_activity_time = lv_tick_get();
     }
 }
 
@@ -14322,6 +14381,17 @@ void app_main(void)
     
     // Set display brightness
     bsp_display_brightness_set(80);
+    
+    // Initialize screen timeout
+    last_activity_time = lv_tick_get();
+    lv_indev_t *touch_indev = bsp_display_get_input_dev();
+    if (touch_indev) {
+        lv_indev_add_event_cb(touch_indev, touch_activity_cb, LV_EVENT_PRESSED, NULL);
+        ESP_LOGI(TAG, "Screen timeout enabled: %d seconds", SCREEN_TIMEOUT_MS / 1000);
+    } else {
+        ESP_LOGW(TAG, "Touch input device not available, screen timeout disabled");
+    }
+    screen_timeout_timer = lv_timer_create(screen_timeout_timer_cb, SCREEN_CHECK_INTERVAL, NULL);
     
     // Show splash screen with animation (will transition to main tiles when done)
     bsp_display_lock(0);
