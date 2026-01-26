@@ -434,17 +434,8 @@ static int selected_network_count = 0;
 
 // Observer global variables (large arrays in PSRAM)
 static observer_network_t *observer_networks = NULL;  // Allocated in PSRAM
-static int observer_network_count = 0;
-static bool observer_running = false;
 static TimerHandle_t observer_timer = NULL;
 static TaskHandle_t observer_task_handle = NULL;
-
-// Popup state
-static bool popup_open = false;
-static int popup_network_idx = -1;  // Index of network being viewed in popup
-static lv_obj_t *popup_obj = NULL;
-static lv_obj_t *popup_clients_container = NULL;
-static TimerHandle_t popup_timer = NULL;  // 10s timer for popup polling
 #define POPUP_POLL_INTERVAL_MS  10000  // 10 seconds
 
 // Deauth popup state
@@ -455,27 +446,11 @@ static lv_obj_t *deauth_popup_obj = NULL;
 static lv_obj_t *deauth_btn = NULL;
 static lv_obj_t *deauth_btn_label = NULL;
 
-// Scan & Attack deauth popup
-static lv_obj_t *scan_deauth_overlay = NULL;  // Modal overlay
-static lv_obj_t *scan_deauth_popup_obj = NULL;
-
 // Evil Twin attack state
 static lv_obj_t *evil_twin_loading_overlay = NULL;  // Loading overlay while fetching
-static lv_obj_t *evil_twin_overlay = NULL;  // Modal overlay
-static lv_obj_t *evil_twin_popup_obj = NULL;
-static lv_obj_t *evil_twin_network_dropdown = NULL;
-static lv_obj_t *evil_twin_html_dropdown = NULL;
-static lv_obj_t *evil_twin_status_label = NULL;
-static lv_obj_t *evil_twin_close_btn = NULL;
 static int evil_twin_html_count = 0;
 
-// SAE Overflow attack state
-static lv_obj_t *sae_popup_overlay = NULL;
-static lv_obj_t *sae_popup_obj = NULL;
-
 // Handshaker attack state
-static lv_obj_t *handshaker_popup_overlay = NULL;
-static lv_obj_t *handshaker_popup_obj = NULL;
 static lv_obj_t *handshaker_status_label = NULL;
 static volatile bool handshaker_monitoring = false;
 static TaskHandle_t handshaker_monitor_task_handle = NULL;
@@ -786,8 +761,6 @@ static char arp_our_ip[20] = {0};
 static bool arp_wifi_connected = false;
 
 // ARP Poison popup (attack active)
-static lv_obj_t *arp_attack_popup_overlay = NULL;
-static lv_obj_t *arp_attack_popup_obj = NULL;
 
 // ARP Host storage (global legacy - type defined earlier)
 static arp_host_t arp_hosts[ARP_MAX_HOSTS];
@@ -1071,7 +1044,6 @@ static void init_uart2(void);
 static void deinit_uart2(void);
 static void load_hw_config_from_nvs(void);
 static void kraken_scan_task(void *arg);
-static void start_kraken_scanning(void);
 static void stop_kraken_scanning(void);
 static void update_portal_icon(void);
 static void karma2_attack_background_cb(lv_event_t *e);
@@ -13074,7 +13046,7 @@ static void update_portal_icon(void)
 
 
 // Start Kraken background scanning on UART2
-static void start_kraken_scanning(void)
+static void __attribute__((unused)) start_kraken_scanning(void)
 {
     if (hw_config != 1 || !uart2_initialized) {
         ESP_LOGW(TAG, "Cannot start Kraken scanning: not in Kraken mode or UART2 not initialized");

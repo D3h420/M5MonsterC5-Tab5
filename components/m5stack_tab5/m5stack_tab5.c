@@ -798,6 +798,7 @@ esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
     assert(i2s_data_if);
 
     const audio_codec_gpio_if_t* gpio_if = audio_codec_new_gpio();
+    (void)gpio_if;
 
     i2c_master_bus_handle_t i2c_bus_handle = bsp_i2c_get_handle();
     audio_codec_i2c_cfg_t i2c_cfg          = {
@@ -812,6 +813,7 @@ esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
         .pa_voltage        = 5.0,
         .codec_dac_voltage = 3.3,
     };
+    (void)gain;
 
     es8388_codec_cfg_t es8388_cfg = {
         .codec_mode  = ESP_CODEC_DEV_WORK_MODE_DAC,
@@ -1278,22 +1280,18 @@ err:
 #include "esp_lcd_st7123.h"
 
 // ST7123 触摸坐标打印回调函数
-static void st7123_touch_callback(esp_lcd_touch_handle_t tp)
+static void __attribute__((unused)) st7123_touch_callback(esp_lcd_touch_handle_t tp)
 {
-    uint16_t touch_x[10];
-    uint16_t touch_y[10];
-    uint16_t touch_strength[10];
+    esp_lcd_touch_point_data_t points[10];
     uint8_t touch_cnt = 0;
 
     // 读取触摸数据
     esp_err_t ret = esp_lcd_touch_read_data(tp);
     if (ret == ESP_OK) {
-        // 获取触摸坐标
-        bool pressed = esp_lcd_touch_get_coordinates(tp, touch_x, touch_y, touch_strength, &touch_cnt, 10);
-
-        if (pressed && touch_cnt > 0) {
+        if (esp_lcd_touch_get_data(tp, points, &touch_cnt, 10) == ESP_OK && touch_cnt > 0) {
             for (int i = 0; i < touch_cnt; i++) {
-                printf("ST7123 Touch %d: x=%d, y=%d, strength=%d\n", i, touch_x[i], touch_y[i], touch_strength[i]);
+                printf("ST7123 Touch %d: x=%d, y=%d, strength=%d\n",
+                       i, points[i].x, points[i].y, points[i].strength);
             }
         }
     }
@@ -1576,21 +1574,19 @@ static void lvgl_read_cb(lv_indev_t* indev, lv_indev_data_t* data)
         return;
     }
 
-    uint16_t touch_x[1];
-    uint16_t touch_y[1];
-    uint16_t touch_strength[1];
+    esp_lcd_touch_point_data_t points[1];
     uint8_t touch_cnt = 0;
 
     esp_lcd_touch_read_data(_lcd_touch_handle);
     bool touchpad_pressed =
-        esp_lcd_touch_get_coordinates(_lcd_touch_handle, touch_x, touch_y, touch_strength, &touch_cnt, 1);
+        (esp_lcd_touch_get_data(_lcd_touch_handle, points, &touch_cnt, 1) == ESP_OK && touch_cnt > 0);
 
     if (!touchpad_pressed) {
         data->state = LV_INDEV_STATE_REL;
     } else {
         data->state   = LV_INDEV_STATE_PR;
-        data->point.x = touch_x[0];
-        data->point.y = touch_y[0];
+        data->point.x = points[0].x;
+        data->point.y = points[0].y;
     }
 }
 
