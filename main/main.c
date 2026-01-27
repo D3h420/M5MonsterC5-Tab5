@@ -419,10 +419,27 @@ typedef struct {
     arp_host_t *arp_hosts;  // PSRAM
     int arp_host_count;
     
+    // Transport type for this tab context
+    uint8_t transport_kind;  // 0=Grove, 1=USB, 2=UART2, 3=INTERNAL
 } tab_context_t;
 
-// Three independent tab contexts
-static tab_context_t uart1_ctx = {0};
+typedef enum {
+    TAB_GROVE = 0,
+    TAB_USB = 1,
+    TAB_UART2 = 2,
+    TAB_INTERNAL = 3,
+} tab_id_t;
+
+typedef enum {
+    TRANSPORT_GROVE = 0,
+    TRANSPORT_USB = 1,
+    TRANSPORT_UART2 = 2,
+    TRANSPORT_INTERNAL = 3,
+} transport_kind_t;
+
+// Tab contexts (Grove, USB, UART2, INTERNAL)
+static tab_context_t grove_ctx = {0};
+static tab_context_t usb_ctx = {0};
 static tab_context_t uart2_ctx = {0};
 static tab_context_t internal_ctx = {0};
 
@@ -482,7 +499,9 @@ static uint8_t hw_config = 0;         // 0=Monster (single UART), 1=Kraken (dual
 static bool uart2_initialized = false;
 
 // Board detection state
-static bool uart1_detected = false;
+static bool grove_detected = false;
+static bool usb_detected = false;
+static bool uart1_detected = false;  // Derived: Grove or USB
 static bool uart2_detected = false;
 static bool board_detection_popup_open = false;
 static lv_timer_t *board_detect_retry_timer = NULL;
@@ -500,15 +519,17 @@ static int portal_new_data_count = 0;           // Count of new passwords since 
 static lv_obj_t *portal_icon = NULL;            // Portal icon in status bar
 
 // Tab-based UI state
-static uint8_t current_tab = 0;                 // 0=UART1, 1=UART2, 2=INTERNAL
-static uint8_t portal_started_by_uart = 0;      // 0=none, 1=UART1, 2=UART2
+static tab_id_t current_tab = TAB_INTERNAL;     // Active tab id
+static uint8_t portal_started_by_uart = 0;      // 0=none, 1=UART1 (Grove/USB), 2=UART2
 static lv_obj_t *tab_bar = NULL;                // Tab bar container
-static lv_obj_t *uart1_tab_btn = NULL;          // UART 1 tab button
+static lv_obj_t *grove_tab_btn = NULL;          // Grove tab button
+static lv_obj_t *usb_tab_btn = NULL;            // USB tab button
 static lv_obj_t *uart2_tab_btn = NULL;          // UART 2 tab button
 static lv_obj_t *internal_tab_btn = NULL;       // INTERNAL tab button
 
 // Tab content containers (persistent, hidden/shown)
-static lv_obj_t *uart1_container = NULL;
+static lv_obj_t *grove_container = NULL;
+static lv_obj_t *usb_container = NULL;
 static lv_obj_t *uart2_container = NULL;
 static lv_obj_t *internal_container = NULL;
 
@@ -519,21 +540,82 @@ static lv_obj_t *internal_settings_page = NULL;
 // Helper to get current tab's context
 static tab_context_t* get_current_ctx(void) {
     switch (current_tab) {
-        case 0: return &uart1_ctx;
-        case 1: return &uart2_ctx;
-        case 2: return &internal_ctx;
-        default: return &uart1_ctx;
+        case TAB_GROVE: return &grove_ctx;
+        case TAB_USB: return &usb_ctx;
+        case TAB_UART2: return &uart2_ctx;
+        case TAB_INTERNAL: return &internal_ctx;
+        default: return &internal_ctx;
     }
+}
+
+static tab_id_t tab_id_for_ctx(const tab_context_t *ctx) {
+    if (ctx == &grove_ctx) return TAB_GROVE;
+    if (ctx == &usb_ctx) return TAB_USB;
+    if (ctx == &uart2_ctx) return TAB_UART2;
+    return TAB_INTERNAL;
 }
 
 // Helper to get current tab's container (from global variables)
 static lv_obj_t* get_current_tab_container(void) {
     switch (current_tab) {
-        case 0: return uart1_container;
-        case 1: return uart2_container;
-        case 2: return internal_container;
-        default: return uart1_container;
+        case TAB_GROVE: return grove_container;
+        case TAB_USB: return usb_container;
+        case TAB_UART2: return uart2_container;
+        case TAB_INTERNAL: return internal_container;
+        default: return internal_container;
     }
+}
+
+static tab_context_t* get_ctx_for_tab(tab_id_t tab) {
+    switch (tab) {
+        case TAB_GROVE: return &grove_ctx;
+        case TAB_USB: return &usb_ctx;
+        case TAB_UART2: return &uart2_ctx;
+        case TAB_INTERNAL: return &internal_ctx;
+        default: return &internal_ctx;
+    }
+}
+
+static lv_obj_t* get_container_for_tab(tab_id_t tab) {
+    switch (tab) {
+        case TAB_GROVE: return grove_container;
+        case TAB_USB: return usb_container;
+        case TAB_UART2: return uart2_container;
+        case TAB_INTERNAL: return internal_container;
+        default: return internal_container;
+    }
+}
+
+static bool tab_is_uart1(tab_id_t tab) {
+    return (tab == TAB_GROVE || tab == TAB_USB);
+}
+
+static bool tab_is_uart2(tab_id_t tab) {
+    return (tab == TAB_UART2);
+}
+
+static bool tab_is_internal(tab_id_t tab) {
+    return (tab == TAB_INTERNAL);
+}
+
+static const char* tab_transport_name(tab_id_t tab) {
+    switch (tab) {
+        case TAB_GROVE: return "Grove";
+        case TAB_USB: return "USB";
+        case TAB_UART2: return "UART2";
+        case TAB_INTERNAL: return "INTERNAL";
+        default: return "INTERNAL";
+    }
+}
+
+static uint8_t uart_index_for_tab(tab_id_t tab) {
+    if (tab_is_uart1(tab)) return 1;
+    if (tab_is_uart2(tab)) return 2;
+    return 0;
+}
+
+static uart_port_t uart_port_for_tab(tab_id_t tab) {
+    return tab_is_uart2(tab) ? UART2_NUM : UART_NUM;
 }
 
 // Helper to hide all pages in a tab's context (call before showing a new page)
@@ -619,7 +701,8 @@ static void init_tab_context(tab_context_t *ctx) {
 // Initialize all tab contexts
 static void init_all_tab_contexts(void) {
     ESP_LOGI(TAG, "Initializing all tab contexts with PSRAM...");
-    init_tab_context(&uart1_ctx);
+    init_tab_context(&grove_ctx);
+    init_tab_context(&usb_ctx);
     init_tab_context(&uart2_ctx);
     // internal_ctx doesn't need most allocations, but init anyway for safety
     init_tab_context(&internal_ctx);
@@ -648,9 +731,9 @@ static void restore_tab_context_to_globals(tab_context_t *ctx) {
     
     // Observer now uses ctx-> directly, no need to restore globals
     // Each tab has its own independent observer data in ctx->observer_networks
-    ESP_LOGI(TAG, "Tab %d observer_running=%d, network_count=%d", 
-             (ctx == &uart1_ctx) ? 0 : 1, 
-             ctx->observer_running, 
+    ESP_LOGI(TAG, "Tab %d observer_running=%d, network_count=%d",
+             (int)tab_id_for_ctx(ctx),
+             ctx->observer_running,
              ctx->observer_network_count);
     
 }
@@ -1348,45 +1431,27 @@ static bool usb_transport_ready = false;
 static bool usb_transport_warned = false;
 static usbh_cdc_handle_t usb_cdc_handle = NULL;
 static bool usb_cdc_connected = false;
-static bool uart1_force_grove = false;
 static bool usb_host_checked = false;
 static bool usb_host_installed = false;
 static bool usb_host_started_by_us = false;
 static uint32_t usb_next_retry_ms = 0;
 static bool usb_log_tuned = false;
-static lv_obj_t *uart1_tab_label = NULL;
 static bool board_redetect_pending = false;
-
-static void uart1_tab_label_set_cb(void *user_data)
-{
-    const char *text = (const char *)user_data;
-    if (uart1_tab_label) {
-        lv_label_set_text(uart1_tab_label, text);
-    }
-}
-
-static void uart1_update_tab_label(const char *text)
-{
-    if (!uart1_tab_label) {
-        return;
-    }
-    lv_async_call(uart1_tab_label_set_cb, (void *)text);
-}
 
 static void board_redetect_cb(void *user_data)
 {
     (void)user_data;
     board_redetect_pending = false;
 
-    bool prev_uart1 = uart1_detected;
+    bool prev_grove = grove_detected;
+    bool prev_usb = usb_detected;
     bool prev_uart2 = uart2_detected;
-    bool prev_force_grove = uart1_force_grove;
 
     detect_boards();
 
-    bool changed = (prev_uart1 != uart1_detected) ||
-                   (prev_uart2 != uart2_detected) ||
-                   (prev_force_grove != uart1_force_grove);
+    bool changed = (prev_grove != grove_detected) ||
+                   (prev_usb != usb_detected) ||
+                   (prev_uart2 != uart2_detected);
 
     if (changed && (uart1_detected || uart2_detected) && !board_detection_popup_open) {
         reload_gui_for_hw_config();
@@ -1405,25 +1470,35 @@ static void schedule_board_redetect(void)
 
 static const char *uart1_transport_name(void)
 {
-    if (uart1_force_grove) {
+    if (current_tab == TAB_USB) {
+        return "USB";
+    }
+    if (current_tab == TAB_GROVE) {
         return "Grove";
     }
-    return usb_cdc_connected ? "USB" : "UART1";
+    if (usb_detected && !grove_detected) {
+        return "USB";
+    }
+    return "Grove";
+}
+
+static tab_id_t uart1_preferred_tab(void)
+{
+    if (grove_detected) {
+        return TAB_GROVE;
+    }
+    if (usb_detected) {
+        return TAB_USB;
+    }
+    return TAB_GROVE;
 }
 
 static const char *uart1_connector_name(void)
 {
-    return uart1_force_grove ? "Grove" : (usb_cdc_connected ? "USB" : "Grove");
-}
-
-static const char *tab_transport_name(int tab)
-{
-    return (tab == 1) ? "UART2" : uart1_transport_name();
-}
-
-static bool uart1_use_usb(void)
-{
-    return usb_cdc_connected && !uart1_force_grove;
+    if (current_tab == TAB_USB) {
+        return "USB";
+    }
+    return "Grove";
 }
 
 static void usb_check_host_installed(void)
@@ -1443,7 +1518,6 @@ static void usb_cdc_connect_cb(usbh_cdc_handle_t cdc_handle, void *user_data)
     (void)user_data;
     usb_cdc_connected = true;
     ESP_LOGI(TAG, "[USB] CDC device connected");
-    uart1_update_tab_label("USB");
     schedule_board_redetect();
 }
 
@@ -1453,7 +1527,6 @@ static void usb_cdc_disconnect_cb(usbh_cdc_handle_t cdc_handle, void *user_data)
     (void)user_data;
     usb_cdc_connected = false;
     ESP_LOGW(TAG, "[USB] CDC device disconnected");
-    uart1_update_tab_label("Grove");
     schedule_board_redetect();
 }
 
@@ -1606,20 +1679,30 @@ static int usb_transport_read(void *data, size_t len, TickType_t ticks_to_wait)
     return (int)read_len;
 }
 
-static int transport_write_bytes(uart_port_t port, const char *data, size_t len)
+static int transport_write_bytes_tab(tab_id_t tab, uart_port_t port, const char *data, size_t len)
 {
-    if (port == UART_NUM && uart1_use_usb()) {
+    if (port == UART_NUM && tab == TAB_USB) {
         return usb_transport_write(data, len);
     }
     return uart_write_bytes(port, data, len);
 }
 
-static int transport_read_bytes(uart_port_t port, void *data, size_t len, TickType_t ticks_to_wait)
+static int transport_read_bytes_tab(tab_id_t tab, uart_port_t port, void *data, size_t len, TickType_t ticks_to_wait)
 {
-    if (port == UART_NUM && uart1_use_usb()) {
+    if (port == UART_NUM && tab == TAB_USB) {
         return usb_transport_read(data, len, ticks_to_wait);
     }
     return uart_read_bytes(port, (uint8_t *)data, len, ticks_to_wait);
+}
+
+static int transport_write_bytes(uart_port_t port, const char *data, size_t len)
+{
+    return transport_write_bytes_tab(current_tab, port, data, len);
+}
+
+static int transport_read_bytes(uart_port_t port, void *data, size_t len, TickType_t ticks_to_wait)
+{
+    return transport_read_bytes_tab(current_tab, port, data, len, ticks_to_wait);
 }
 
 // UART initialization
@@ -1670,9 +1753,10 @@ static void log_memory_stats(const char *context)
 static void uart_send_command(const char *cmd)
 {
     log_memory_stats("TX1");
-    transport_write_bytes(UART_NUM, cmd, strlen(cmd));
-    transport_write_bytes(UART_NUM, "\r\n", 2);
-    ESP_LOGI(TAG, "[%s] Sent command: %s", uart1_transport_name(), cmd);
+    tab_id_t uart1_tab = uart1_preferred_tab();
+    transport_write_bytes_tab(uart1_tab, UART_NUM, cmd, strlen(cmd));
+    transport_write_bytes_tab(uart1_tab, UART_NUM, "\r\n", 2);
+    ESP_LOGI(TAG, "[%s] Sent command: %s", tab_transport_name(uart1_tab), cmd);
 }
 
 // Send command over UART2 (secondary, Kraken mode only)
@@ -1748,7 +1832,7 @@ static bool parse_network_line(const char *line, wifi_network_t *net)
 static void wifi_scan_task(void *arg)
 {
     // Save the tab that initiated this scan (so we store results to correct context)
-    int scan_tab = current_tab;
+    tab_id_t scan_tab = current_tab;
     const char *uart_name = tab_transport_name(scan_tab);
     
     ESP_LOGI(TAG, "Starting WiFi scan task for tab %d (%s)", scan_tab, uart_name);
@@ -1758,7 +1842,7 @@ static void wifi_scan_task(void *arg)
     memset(networks, 0, sizeof(networks));
     
     // Get the UART for current tab
-    uart_port_t uart_port = (scan_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_port_t uart_port = uart_port_for_tab(scan_tab);
     
     ESP_LOGI(TAG, "[%s] Using transport on port %d for scan", uart_name, uart_port);
     
@@ -1767,13 +1851,8 @@ static void wifi_scan_task(void *arg)
     
     // Send scan command to the correct UART
     log_memory_stats("TX-scan");
-    if (scan_tab == 1 && uart2_initialized) {
-        transport_write_bytes(UART2_NUM, "scan_networks\r\n", 15);
-        ESP_LOGI(TAG, "[M-Bus] Sent command: scan_networks");
-    } else {
-        transport_write_bytes(UART_NUM, "scan_networks\r\n", 15);
-        ESP_LOGI(TAG, "[%s] Sent command: scan_networks", uart1_connector_name());
-    }
+    transport_write_bytes_tab(scan_tab, uart_port, "scan_networks\r\n", 15);
+    ESP_LOGI(TAG, "[%s] Sent command: scan_networks", tab_transport_name(scan_tab));
     
     // Buffer for receiving data
     static char rx_buffer[UART_BUF_SIZE];
@@ -1785,7 +1864,7 @@ static void wifi_scan_task(void *arg)
     TickType_t timeout_ticks = pdMS_TO_TICKS(UART_RX_TIMEOUT);
     
     while (!scan_complete && (xTaskGetTickCount() - start_time) < timeout_ticks) {
-        int len = transport_read_bytes(uart_port, rx_buffer, UART_BUF_SIZE - 1, pdMS_TO_TICKS(100));
+        int len = transport_read_bytes_tab(scan_tab, uart_port, rx_buffer, UART_BUF_SIZE - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
             rx_buffer[len] = '\0';
@@ -1931,12 +2010,7 @@ static void wifi_scan_task(void *arg)
     scan_in_progress = false;
     
     // Copy scan results to the tab that initiated the scan (not necessarily current tab!)
-    tab_context_t *ctx = NULL;
-    switch (scan_tab) {
-        case 0: ctx = &uart1_ctx; break;
-        case 1: ctx = &uart2_ctx; break;
-        case 2: ctx = &internal_ctx; break;
-    }
+    tab_context_t *ctx = get_ctx_for_tab(scan_tab);
     if (ctx && ctx->networks) {
         memcpy(ctx->networks, networks, sizeof(wifi_network_t) * MAX_NETWORKS);
         ctx->network_count = network_count;
@@ -2525,7 +2599,7 @@ static void create_status_bar(void)
 // Get current UART port based on active tab
 static uart_port_t get_current_uart(void)
 {
-    if (current_tab == 1 && uart2_initialized) {
+    if (tab_is_uart2(current_tab) && uart2_initialized) {
         return UART2_NUM;
     }
     return UART_NUM;
@@ -2534,15 +2608,15 @@ static uart_port_t get_current_uart(void)
 // Send command to the UART corresponding to current tab
 static void uart_send_command_for_tab(const char *cmd)
 {
-    if (current_tab == 1 && uart2_initialized) {
-        transport_write_bytes(UART2_NUM, cmd, strlen(cmd));
-        transport_write_bytes(UART2_NUM, "\r\n", 2);
-        ESP_LOGI(TAG, "[UART2/Tab] Sent command: %s", cmd);
-    } else {
-        transport_write_bytes(UART_NUM, cmd, strlen(cmd));
-        transport_write_bytes(UART_NUM, "\r\n", 2);
-        ESP_LOGI(TAG, "[%s/Tab] Sent command: %s", uart1_transport_name(), cmd);
+    if (tab_is_internal(current_tab)) {
+        ESP_LOGW(TAG, "[INTERNAL/Tab] Ignoring command: %s", cmd);
+        return;
     }
+
+    uart_port_t uart_port = uart_port_for_tab(current_tab);
+    transport_write_bytes_tab(current_tab, uart_port, cmd, strlen(cmd));
+    transport_write_bytes_tab(current_tab, uart_port, "\r\n", 2);
+    ESP_LOGI(TAG, "[%s/Tab] Sent command: %s", tab_transport_name(current_tab), cmd);
 }
 
 // Update tab button styles to show active tab
@@ -2550,32 +2624,55 @@ static void update_tab_styles(void)
 {
     if (!internal_tab_btn) return;  // Need at least INTERNAL tab
     
-    // ========== UART 1 tab styling (only if exists) ==========
-    if (uart1_tab_btn) {
-        if (current_tab == 0) {
+    // ========== Grove tab styling ==========
+    if (grove_tab_btn) {
+        if (current_tab == TAB_GROVE) {
             // Active state - bright color with glow + border
-            lv_obj_set_style_bg_color(uart1_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
-            lv_obj_set_style_bg_grad_color(uart1_tab_btn, lv_color_hex(0x0097A7), 0);
-            lv_obj_set_style_bg_grad_dir(uart1_tab_btn, LV_GRAD_DIR_VER, 0);
-            lv_obj_set_style_shadow_opa(uart1_tab_btn, LV_OPA_80, 0);
-            lv_obj_set_style_shadow_spread(uart1_tab_btn, 4, 0);
+            lv_obj_set_style_bg_color(grove_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
+            lv_obj_set_style_bg_grad_color(grove_tab_btn, lv_color_hex(0x0097A7), 0);
+            lv_obj_set_style_bg_grad_dir(grove_tab_btn, LV_GRAD_DIR_VER, 0);
+            lv_obj_set_style_shadow_opa(grove_tab_btn, LV_OPA_80, 0);
+            lv_obj_set_style_shadow_spread(grove_tab_btn, 4, 0);
             // Active indicator - white top border
-            lv_obj_set_style_border_width(uart1_tab_btn, 3, 0);
-            lv_obj_set_style_border_color(uart1_tab_btn, lv_color_hex(0xFFFFFF), 0);
-            lv_obj_set_style_border_side(uart1_tab_btn, LV_BORDER_SIDE_TOP, 0);
+            lv_obj_set_style_border_width(grove_tab_btn, 3, 0);
+            lv_obj_set_style_border_color(grove_tab_btn, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_style_border_side(grove_tab_btn, LV_BORDER_SIDE_TOP, 0);
         } else {
             // Inactive state - dark muted color, no border
-            lv_obj_set_style_bg_color(uart1_tab_btn, lv_color_hex(TAB_COLOR_UART1_INACTIVE), 0);
-            lv_obj_set_style_bg_grad_dir(uart1_tab_btn, LV_GRAD_DIR_NONE, 0);
-            lv_obj_set_style_shadow_opa(uart1_tab_btn, LV_OPA_20, 0);
-            lv_obj_set_style_shadow_spread(uart1_tab_btn, 0, 0);
-            lv_obj_set_style_border_width(uart1_tab_btn, 0, 0);
+            lv_obj_set_style_bg_color(grove_tab_btn, lv_color_hex(TAB_COLOR_UART1_INACTIVE), 0);
+            lv_obj_set_style_bg_grad_dir(grove_tab_btn, LV_GRAD_DIR_NONE, 0);
+            lv_obj_set_style_shadow_opa(grove_tab_btn, LV_OPA_20, 0);
+            lv_obj_set_style_shadow_spread(grove_tab_btn, 0, 0);
+            lv_obj_set_style_border_width(grove_tab_btn, 0, 0);
+        }
+    }
+
+    // ========== USB tab styling ==========
+    if (usb_tab_btn) {
+        if (current_tab == TAB_USB) {
+            // Active state - bright color with glow + border
+            lv_obj_set_style_bg_color(usb_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
+            lv_obj_set_style_bg_grad_color(usb_tab_btn, lv_color_hex(0x0097A7), 0);
+            lv_obj_set_style_bg_grad_dir(usb_tab_btn, LV_GRAD_DIR_VER, 0);
+            lv_obj_set_style_shadow_opa(usb_tab_btn, LV_OPA_80, 0);
+            lv_obj_set_style_shadow_spread(usb_tab_btn, 4, 0);
+            // Active indicator - white top border
+            lv_obj_set_style_border_width(usb_tab_btn, 3, 0);
+            lv_obj_set_style_border_color(usb_tab_btn, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_style_border_side(usb_tab_btn, LV_BORDER_SIDE_TOP, 0);
+        } else {
+            // Inactive state - dark muted color, no border
+            lv_obj_set_style_bg_color(usb_tab_btn, lv_color_hex(TAB_COLOR_UART1_INACTIVE), 0);
+            lv_obj_set_style_bg_grad_dir(usb_tab_btn, LV_GRAD_DIR_NONE, 0);
+            lv_obj_set_style_shadow_opa(usb_tab_btn, LV_OPA_20, 0);
+            lv_obj_set_style_shadow_spread(usb_tab_btn, 0, 0);
+            lv_obj_set_style_border_width(usb_tab_btn, 0, 0);
         }
     }
     
     // ========== UART 2 tab styling ==========
     if (uart2_tab_btn) {
-        if (current_tab == 1) {
+        if (current_tab == TAB_UART2) {
             // Active state - bright color with glow + border
             lv_obj_set_style_bg_color(uart2_tab_btn, lv_color_hex(TAB_COLOR_UART2_ACTIVE), 0);
             lv_obj_set_style_bg_grad_color(uart2_tab_btn, lv_color_hex(0xF57C00), 0);
@@ -2597,7 +2694,7 @@ static void update_tab_styles(void)
     }
     
     // ========== INTERNAL tab styling ==========
-    if (current_tab == 2) {
+    if (current_tab == TAB_INTERNAL) {
         // Active state - bright color with glow + border
         lv_obj_set_style_bg_color(internal_tab_btn, lv_color_hex(TAB_COLOR_INTERNAL_ACTIVE), 0);
         lv_obj_set_style_bg_grad_color(internal_tab_btn, lv_color_hex(0x7B1FA2), 0);
@@ -2621,7 +2718,7 @@ static void update_tab_styles(void)
 // Tab click callback - hide/show containers instead of recreating
 static void tab_click_cb(lv_event_t *e)
 {
-    uint32_t tab_id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    tab_id_t tab_id = (tab_id_t)(uintptr_t)lv_event_get_user_data(e);
     
     if (tab_id == current_tab) return;  // Already on this tab
     
@@ -2632,16 +2729,9 @@ static void tab_click_cb(lv_event_t *e)
     save_globals_to_tab_context(old_ctx);
     
     // Hide current container (don't delete - preserve state)
-    switch (current_tab) {
-        case 0:
-            if (uart1_container) lv_obj_add_flag(uart1_container, LV_OBJ_FLAG_HIDDEN);
-            break;
-        case 1:
-            if (uart2_container) lv_obj_add_flag(uart2_container, LV_OBJ_FLAG_HIDDEN);
-            break;
-        case 2:
-            if (internal_container) lv_obj_add_flag(internal_container, LV_OBJ_FLAG_HIDDEN);
-            break;
+    lv_obj_t *old_container = get_current_tab_container();
+    if (old_container) {
+        lv_obj_add_flag(old_container, LV_OBJ_FLAG_HIDDEN);
     }
     
     current_tab = tab_id;
@@ -2653,50 +2743,38 @@ static void tab_click_cb(lv_event_t *e)
     restore_ui_pointers_from_ctx(new_ctx);
     
     // Show new container and restore its visible content
-    switch (current_tab) {
-        case 0:
-            if (uart1_container) {
-                lv_obj_clear_flag(uart1_container, LV_OBJ_FLAG_HIDDEN);
-                // First visit - create tiles
-                if (!uart1_ctx.tiles) {
-                    show_uart1_tiles();
-                } else {
-                    // Restore last visible page (or show tiles if none)
-                    if (uart1_ctx.current_visible_page) {
-                        lv_obj_clear_flag(uart1_ctx.current_visible_page, LV_OBJ_FLAG_HIDDEN);
-                    } else {
-                        lv_obj_clear_flag(uart1_ctx.tiles, LV_OBJ_FLAG_HIDDEN);
-                        uart1_ctx.current_visible_page = uart1_ctx.tiles;
-                    }
-                }
-            }
-            break;
-        case 1:
-            if (uart2_container) {
-                lv_obj_clear_flag(uart2_container, LV_OBJ_FLAG_HIDDEN);
-                // First visit - create tiles
-                if (!uart2_ctx.tiles) {
-                    show_uart2_tiles();
-                } else {
-                    // Restore last visible page (or show tiles if none)
-                    if (uart2_ctx.current_visible_page) {
-                        lv_obj_clear_flag(uart2_ctx.current_visible_page, LV_OBJ_FLAG_HIDDEN);
-                    } else {
-                        lv_obj_clear_flag(uart2_ctx.tiles, LV_OBJ_FLAG_HIDDEN);
-                        uart2_ctx.current_visible_page = uart2_ctx.tiles;
-                    }
-                }
-            }
-            break;
-        case 2:
-            if (internal_container) {
-                lv_obj_clear_flag(internal_container, LV_OBJ_FLAG_HIDDEN);
-                // Ensure tiles exist
-                if (!internal_tiles) {
-                    show_internal_tiles();
-                }
-            }
-            break;
+    lv_obj_t *new_container = get_current_tab_container();
+    if (new_container) {
+        lv_obj_clear_flag(new_container, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (tab_is_internal(current_tab)) {
+        if (!internal_tiles) {
+            show_internal_tiles();
+        }
+        return;
+    }
+
+    if (tab_is_uart2(current_tab)) {
+        if (!uart2_ctx.tiles) {
+            show_uart2_tiles();
+        } else if (uart2_ctx.current_visible_page) {
+            lv_obj_clear_flag(uart2_ctx.current_visible_page, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(uart2_ctx.tiles, LV_OBJ_FLAG_HIDDEN);
+            uart2_ctx.current_visible_page = uart2_ctx.tiles;
+        }
+        return;
+    }
+
+    // Grove/USB tabs share UART1 UI
+    if (!new_ctx->tiles) {
+        show_uart1_tiles();
+    } else if (new_ctx->current_visible_page) {
+        lv_obj_clear_flag(new_ctx->current_visible_page, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(new_ctx->tiles, LV_OBJ_FLAG_HIDDEN);
+        new_ctx->current_visible_page = new_ctx->tiles;
     }
 }
 
@@ -2706,32 +2784,48 @@ static void create_tab_containers(void)
     lv_obj_t *scr = lv_scr_act();
     lv_coord_t height = lv_disp_get_ver_res(NULL) - 85;  // Below status bar + tab bar
     
-    // Set initial tab to first detected UART
-    if (uart1_detected) {
-        current_tab = 0;
+    // Set initial tab to first detected transport
+    if (grove_detected) {
+        current_tab = TAB_GROVE;
+    } else if (usb_detected) {
+        current_tab = TAB_USB;
     } else if (uart2_detected) {
-        current_tab = 1;
+        current_tab = TAB_UART2;
     } else {
-        current_tab = 2;  // INTERNAL if no UARTs detected
+        current_tab = TAB_INTERNAL;  // INTERNAL if no boards detected
     }
     
-    // UART1 container - only if UART1 detected
-    if (uart1_detected) {
-        uart1_container = lv_obj_create(scr);
-        lv_obj_set_size(uart1_container, lv_pct(100), height);
-        lv_obj_align(uart1_container, LV_ALIGN_TOP_MID, 0, 85);
-        lv_obj_set_style_bg_color(uart1_container, COLOR_MATERIAL_BG, 0);
-        lv_obj_set_style_border_width(uart1_container, 0, 0);
-        lv_obj_set_style_radius(uart1_container, 0, 0);
-        lv_obj_set_style_pad_all(uart1_container, 0, 0);
-        lv_obj_clear_flag(uart1_container, LV_OBJ_FLAG_SCROLLABLE);
-        // Hide if not the initial tab
-        if (current_tab != 0) {
-            lv_obj_add_flag(uart1_container, LV_OBJ_FLAG_HIDDEN);
+    // Grove container
+    if (grove_detected) {
+        grove_container = lv_obj_create(scr);
+        lv_obj_set_size(grove_container, lv_pct(100), height);
+        lv_obj_align(grove_container, LV_ALIGN_TOP_MID, 0, 85);
+        lv_obj_set_style_bg_color(grove_container, COLOR_MATERIAL_BG, 0);
+        lv_obj_set_style_border_width(grove_container, 0, 0);
+        lv_obj_set_style_radius(grove_container, 0, 0);
+        lv_obj_set_style_pad_all(grove_container, 0, 0);
+        lv_obj_clear_flag(grove_container, LV_OBJ_FLAG_SCROLLABLE);
+        if (current_tab != TAB_GROVE) {
+            lv_obj_add_flag(grove_container, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    
-    // UART2 container - only if UART2 detected
+
+    // USB container
+    if (usb_detected) {
+        usb_container = lv_obj_create(scr);
+        lv_obj_set_size(usb_container, lv_pct(100), height);
+        lv_obj_align(usb_container, LV_ALIGN_TOP_MID, 0, 85);
+        lv_obj_set_style_bg_color(usb_container, COLOR_MATERIAL_BG, 0);
+        lv_obj_set_style_border_width(usb_container, 0, 0);
+        lv_obj_set_style_radius(usb_container, 0, 0);
+        lv_obj_set_style_pad_all(usb_container, 0, 0);
+        lv_obj_clear_flag(usb_container, LV_OBJ_FLAG_SCROLLABLE);
+        if (current_tab != TAB_USB) {
+            lv_obj_add_flag(usb_container, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    // UART2 container
     if (uart2_detected) {
         uart2_container = lv_obj_create(scr);
         lv_obj_set_size(uart2_container, lv_pct(100), height);
@@ -2742,7 +2836,7 @@ static void create_tab_containers(void)
         lv_obj_set_style_pad_all(uart2_container, 0, 0);
         lv_obj_clear_flag(uart2_container, LV_OBJ_FLAG_SCROLLABLE);
         // Hide if not the initial tab
-        if (current_tab != 1) {
+        if (current_tab != TAB_UART2) {
             lv_obj_add_flag(uart2_container, LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -2757,13 +2851,13 @@ static void create_tab_containers(void)
     lv_obj_set_style_pad_all(internal_container, 0, 0);
     lv_obj_clear_flag(internal_container, LV_OBJ_FLAG_SCROLLABLE);
     // Hide if not the initial tab
-    if (current_tab != 2) {
+    if (current_tab != TAB_INTERNAL) {
         lv_obj_add_flag(internal_container, LV_OBJ_FLAG_HIDDEN);
     }
     
-    ESP_LOGI(TAG, "Tab containers created (%s=%s, UART2=%s, initial_tab=%d)",
-             uart1_transport_name(),
-             uart1_detected ? "YES" : "NO",
+    ESP_LOGI(TAG, "Tab containers created (Grove=%s, USB=%s, UART2=%s, initial_tab=%d)",
+             grove_detected ? "YES" : "NO",
+             usb_detected ? "YES" : "NO",
              uart2_detected ? "YES" : "NO",
              current_tab);
 }
@@ -2771,25 +2865,38 @@ static void create_tab_containers(void)
 // Reload GUI when hardware config changes (e.g., after board detection)
 static void reload_gui_for_hw_config(void)
 {
-    ESP_LOGI(TAG, "Reloading GUI (%s=%s, UART2=%s)",
-             uart1_transport_name(),
-             uart1_detected ? "YES" : "NO",
+    ESP_LOGI(TAG, "Reloading GUI (Grove=%s, USB=%s, UART2=%s)",
+             grove_detected ? "YES" : "NO",
+             usb_detected ? "YES" : "NO",
              uart2_detected ? "YES" : "NO");
     
     lv_obj_t *scr = lv_scr_act();
     lv_coord_t height = lv_disp_get_ver_res(NULL) - 85;
     
-    // Handle UART1 container based on detection
-    if (uart1_detected && !uart1_container) {
-        uart1_container = lv_obj_create(scr);
-        lv_obj_set_size(uart1_container, lv_pct(100), height);
-        lv_obj_align(uart1_container, LV_ALIGN_TOP_MID, 0, 85);
-        lv_obj_set_style_bg_color(uart1_container, COLOR_MATERIAL_BG, 0);
-        lv_obj_set_style_border_width(uart1_container, 0, 0);
-        lv_obj_set_style_radius(uart1_container, 0, 0);
-        lv_obj_set_style_pad_all(uart1_container, 0, 0);
-        lv_obj_clear_flag(uart1_container, LV_OBJ_FLAG_SCROLLABLE);
-        ESP_LOGI(TAG, "Created %s container", uart1_transport_name());
+    // Handle Grove container based on detection
+    if (grove_detected && !grove_container) {
+        grove_container = lv_obj_create(scr);
+        lv_obj_set_size(grove_container, lv_pct(100), height);
+        lv_obj_align(grove_container, LV_ALIGN_TOP_MID, 0, 85);
+        lv_obj_set_style_bg_color(grove_container, COLOR_MATERIAL_BG, 0);
+        lv_obj_set_style_border_width(grove_container, 0, 0);
+        lv_obj_set_style_radius(grove_container, 0, 0);
+        lv_obj_set_style_pad_all(grove_container, 0, 0);
+        lv_obj_clear_flag(grove_container, LV_OBJ_FLAG_SCROLLABLE);
+        ESP_LOGI(TAG, "Created Grove container");
+    }
+
+    // Handle USB container based on detection
+    if (usb_detected && !usb_container) {
+        usb_container = lv_obj_create(scr);
+        lv_obj_set_size(usb_container, lv_pct(100), height);
+        lv_obj_align(usb_container, LV_ALIGN_TOP_MID, 0, 85);
+        lv_obj_set_style_bg_color(usb_container, COLOR_MATERIAL_BG, 0);
+        lv_obj_set_style_border_width(usb_container, 0, 0);
+        lv_obj_set_style_radius(usb_container, 0, 0);
+        lv_obj_set_style_pad_all(usb_container, 0, 0);
+        lv_obj_clear_flag(usb_container, LV_OBJ_FLAG_SCROLLABLE);
+        ESP_LOGI(TAG, "Created USB container");
     }
     
     // Handle UART2 container based on detection
@@ -2809,13 +2916,15 @@ static void reload_gui_for_hw_config(void)
     // Recreate tab bar with correct number of tabs
     create_tab_bar();
     
-    // Set initial tab to first detected UART
-    if (uart1_detected) {
-        current_tab = 0;
+    // Set initial tab to first detected transport
+    if (grove_detected) {
+        current_tab = TAB_GROVE;
+    } else if (usb_detected) {
+        current_tab = TAB_USB;
     } else if (uart2_detected) {
-        current_tab = 1;
+        current_tab = TAB_UART2;
     } else {
-        current_tab = 2;  // INTERNAL if no UARTs detected
+        current_tab = TAB_INTERNAL;  // INTERNAL if no boards detected
     }
     update_tab_styles();
     
@@ -2831,7 +2940,8 @@ static void create_tab_bar(void)
     if (tab_bar) {
         lv_obj_del(tab_bar);
         tab_bar = NULL;
-        uart1_tab_btn = NULL;
+        grove_tab_btn = NULL;
+        usb_tab_btn = NULL;
         uart2_tab_btn = NULL;
         internal_tab_btn = NULL;
     }
@@ -2851,42 +2961,70 @@ static void create_tab_bar(void)
     lv_obj_set_flex_align(tab_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(tab_bar, LV_OBJ_FLAG_SCROLLABLE);
     
-    // Calculate tab count based on detected UARTs
-    // Show tabs only for detected UARTs
-    int uart_tab_count = (uart1_detected ? 1 : 0) + (uart2_detected ? 1 : 0);
-    int tab_count = uart_tab_count + 1;  // +1 for INTERNAL tab
+    // Calculate tab count based on detected transports
+    int tab_count = (grove_detected ? 1 : 0) + (usb_detected ? 1 : 0) + (uart2_detected ? 1 : 0) + 1;
     int tab_width = (lv_disp_get_hor_res(NULL) - 24) / tab_count;  // Account for padding and gaps
     
-    // ========== UART 1 tab (only if UART1 detected) ==========
-    if (uart1_detected) {
-        uart1_tab_btn = lv_btn_create(tab_bar);
-        lv_obj_set_size(uart1_tab_btn, tab_width, 37);
-        lv_obj_set_style_radius(uart1_tab_btn, 8, 0);
-        lv_obj_set_style_shadow_width(uart1_tab_btn, 8, 0);
-        lv_obj_set_style_shadow_color(uart1_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
-        lv_obj_set_style_shadow_opa(uart1_tab_btn, LV_OPA_30, 0);
-        lv_obj_add_event_cb(uart1_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)0);
+    // ========== Grove tab (only if detected) ==========
+    if (grove_detected) {
+        grove_tab_btn = lv_btn_create(tab_bar);
+        lv_obj_set_size(grove_tab_btn, tab_width, 37);
+        lv_obj_set_style_radius(grove_tab_btn, 8, 0);
+        lv_obj_set_style_shadow_width(grove_tab_btn, 8, 0);
+        lv_obj_set_style_shadow_color(grove_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
+        lv_obj_set_style_shadow_opa(grove_tab_btn, LV_OPA_30, 0);
+        lv_obj_add_event_cb(grove_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)TAB_GROVE);
         
         // Icon + Label container
-        lv_obj_t *uart1_content = lv_obj_create(uart1_tab_btn);
-        lv_obj_remove_style_all(uart1_content);
-        lv_obj_set_size(uart1_content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(uart1_content, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(uart1_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_gap(uart1_content, 6, 0);
-        lv_obj_center(uart1_content);
-        lv_obj_clear_flag(uart1_content, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_t *grove_content = lv_obj_create(grove_tab_btn);
+        lv_obj_remove_style_all(grove_content);
+        lv_obj_set_size(grove_content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(grove_content, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(grove_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_gap(grove_content, 6, 0);
+        lv_obj_center(grove_content);
+        lv_obj_clear_flag(grove_content, LV_OBJ_FLAG_CLICKABLE);
         
-        lv_obj_t *uart1_icon = lv_label_create(uart1_content);
-        lv_label_set_text(uart1_icon, LV_SYMBOL_WIFI);
-        lv_obj_set_style_text_font(uart1_icon, &lv_font_montserrat_18, 0);
-        lv_obj_set_style_text_color(uart1_icon, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_t *grove_icon = lv_label_create(grove_content);
+        lv_label_set_text(grove_icon, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_font(grove_icon, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(grove_icon, lv_color_hex(0xFFFFFF), 0);
         
-        lv_obj_t *uart1_label = lv_label_create(uart1_content);
-        uart1_tab_label = uart1_label;
-        lv_label_set_text(uart1_label, uart1_connector_name());
-        lv_obj_set_style_text_font(uart1_label, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(uart1_label, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_t *grove_label = lv_label_create(grove_content);
+        lv_label_set_text(grove_label, "GROVE");
+        lv_obj_set_style_text_font(grove_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(grove_label, lv_color_hex(0xFFFFFF), 0);
+    }
+
+    // ========== USB tab (only if detected) ==========
+    if (usb_detected) {
+        usb_tab_btn = lv_btn_create(tab_bar);
+        lv_obj_set_size(usb_tab_btn, tab_width, 37);
+        lv_obj_set_style_radius(usb_tab_btn, 8, 0);
+        lv_obj_set_style_shadow_width(usb_tab_btn, 8, 0);
+        lv_obj_set_style_shadow_color(usb_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
+        lv_obj_set_style_shadow_opa(usb_tab_btn, LV_OPA_30, 0);
+        lv_obj_add_event_cb(usb_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)TAB_USB);
+
+        // Icon + Label container
+        lv_obj_t *usb_content = lv_obj_create(usb_tab_btn);
+        lv_obj_remove_style_all(usb_content);
+        lv_obj_set_size(usb_content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(usb_content, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(usb_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_gap(usb_content, 6, 0);
+        lv_obj_center(usb_content);
+        lv_obj_clear_flag(usb_content, LV_OBJ_FLAG_CLICKABLE);
+
+        lv_obj_t *usb_icon = lv_label_create(usb_content);
+        lv_label_set_text(usb_icon, LV_SYMBOL_USB);
+        lv_obj_set_style_text_font(usb_icon, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(usb_icon, lv_color_hex(0xFFFFFF), 0);
+
+        lv_obj_t *usb_label = lv_label_create(usb_content);
+        lv_label_set_text(usb_label, "USB");
+        lv_obj_set_style_text_font(usb_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(usb_label, lv_color_hex(0xFFFFFF), 0);
     }
     
     // ========== UART 2 tab (only if UART2 detected) ==========
@@ -2897,7 +3035,7 @@ static void create_tab_bar(void)
         lv_obj_set_style_shadow_width(uart2_tab_btn, 8, 0);
         lv_obj_set_style_shadow_color(uart2_tab_btn, lv_color_hex(TAB_COLOR_UART2_ACTIVE), 0);
         lv_obj_set_style_shadow_opa(uart2_tab_btn, LV_OPA_30, 0);
-        lv_obj_add_event_cb(uart2_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)1);
+        lv_obj_add_event_cb(uart2_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)TAB_UART2);
         
         // Icon + Label container
         lv_obj_t *uart2_content = lv_obj_create(uart2_tab_btn);
@@ -2927,7 +3065,7 @@ static void create_tab_bar(void)
     lv_obj_set_style_shadow_width(internal_tab_btn, 8, 0);
     lv_obj_set_style_shadow_color(internal_tab_btn, lv_color_hex(TAB_COLOR_INTERNAL_ACTIVE), 0);
     lv_obj_set_style_shadow_opa(internal_tab_btn, LV_OPA_30, 0);
-    lv_obj_add_event_cb(internal_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)2);
+    lv_obj_add_event_cb(internal_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)TAB_INTERNAL);
     
     // Icon + Label container
     lv_obj_t *internal_content = lv_obj_create(internal_tab_btn);
@@ -2952,10 +3090,10 @@ static void create_tab_bar(void)
     // Apply active tab styling
     update_tab_styles();
     
-    ESP_LOGI(TAG, "Tab bar created: tabs=%d (%s=%s, UART2=%s)",
+    ESP_LOGI(TAG, "Tab bar created: tabs=%d (Grove=%s, USB=%s, UART2=%s)",
              tab_count,
-             uart1_transport_name(),
-             uart1_detected ? "YES" : "NO",
+             grove_detected ? "YES" : "NO",
+             usb_detected ? "YES" : "NO",
              uart2_detected ? "YES" : "NO");
 }
 
@@ -4473,7 +4611,7 @@ static void karma_fetch_html_files(void)
     karma_html_count = 0;
     memset(karma_html_files, 0, sizeof(karma_html_files));
     
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_port_t uart_port = uart_port_for_tab(current_tab);
     uart_flush(uart_port);
     uart_send_command_for_tab("list_sd");
     
@@ -5074,7 +5212,7 @@ static void fetch_html_files_from_sd(void)
     memset(evil_twin_html_files, 0, sizeof(evil_twin_html_files));
     
     // Flush UART buffer
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_port_t uart_port = uart_port_for_tab(current_tab);
     uart_flush(uart_port);
     
     // Send list_sd command to current tab's UART
@@ -5167,8 +5305,8 @@ static void evil_twin_monitor_task(void *arg)
     }
     
     // Determine UART from context
-    int task_tab = (ctx == &uart2_ctx) ? 1 : 0;
-    uart_port_t uart_port = (task_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    tab_id_t task_tab = tab_id_for_ctx(ctx);
+    uart_port_t uart_port = uart_port_for_tab(task_tab);
     const char *uart_name = tab_transport_name(task_tab);
     
     static char rx_buffer[1024];
@@ -5328,19 +5466,19 @@ static void evil_twin_start_cb(lv_event_t *e)
         }
     }
     
-    ESP_LOGI(TAG, "[UART%d] Evil Twin: sending %s", current_tab == 1 ? 2 : 1, cmd);
+    ESP_LOGI(TAG, "[UART%d] Evil Twin: sending %s", uart_index_for_tab(current_tab), cmd);
     uart_send_command_for_tab(cmd);
     vTaskDelay(pdMS_TO_TICKS(100));
     
     // Send select_html command (1-based index)
     char html_cmd[32];
     snprintf(html_cmd, sizeof(html_cmd), "select_html %d", selected_html_idx + 1);
-    ESP_LOGI(TAG, "[UART%d] Evil Twin: sending %s", current_tab == 1 ? 2 : 1, html_cmd);
+    ESP_LOGI(TAG, "[UART%d] Evil Twin: sending %s", uart_index_for_tab(current_tab), html_cmd);
     uart_send_command_for_tab(html_cmd);
     vTaskDelay(pdMS_TO_TICKS(100));
     
     // Send start_evil_twin
-    ESP_LOGI(TAG, "[UART%d] Evil Twin: sending start_evil_twin", current_tab == 1 ? 2 : 1);
+    ESP_LOGI(TAG, "[UART%d] Evil Twin: sending start_evil_twin", uart_index_for_tab(current_tab));
     uart_send_command_for_tab("start_evil_twin");
     
     // Build status text
@@ -5633,21 +5771,22 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
 // Show UART 1 tiles (inside persistent container)
 static void show_uart1_tiles(void)
 {
-    ESP_LOGI(TAG, "Showing %s tiles", uart1_transport_name());
+    ESP_LOGI(TAG, "Showing %s tiles", tab_transport_name(current_tab));
     
-    if (!uart1_container) {
-        ESP_LOGE(TAG, "%s container not initialized!", uart1_transport_name());
+    lv_obj_t *container = get_current_tab_container();
+    if (!container) {
+        ESP_LOGE(TAG, "%s container not initialized!", tab_transport_name(current_tab));
         return;
     }
     
     // Hide other pages in this container, show tiles
-    tab_context_t *ctx = &uart1_ctx;
+    tab_context_t *ctx = get_current_ctx();
     if (ctx->scan_page) lv_obj_add_flag(ctx->scan_page, LV_OBJ_FLAG_HIDDEN);
     if (ctx->observer_page) lv_obj_add_flag(ctx->observer_page, LV_OBJ_FLAG_HIDDEN);
     if (ctx->global_attacks_page) lv_obj_add_flag(ctx->global_attacks_page, LV_OBJ_FLAG_HIDDEN);
     if (ctx->karma_page) lv_obj_add_flag(ctx->karma_page, LV_OBJ_FLAG_HIDDEN);
     
-    create_uart_tiles_in_container(uart1_container, &ctx->tiles);
+    create_uart_tiles_in_container(container, &ctx->tiles);
     ctx->current_visible_page = ctx->tiles;
 }
 
@@ -5743,25 +5882,17 @@ static void show_main_tiles(void)
     }
     
     // Show tiles for current tab and make container visible
-    switch (current_tab) {
-        case 0: 
-            if (uart1_detected && uart1_container) {
-                lv_obj_clear_flag(uart1_container, LV_OBJ_FLAG_HIDDEN);
-                show_uart1_tiles();
-            }
-            break;
-        case 1: 
-            if (uart2_detected && uart2_container) {
-                lv_obj_clear_flag(uart2_container, LV_OBJ_FLAG_HIDDEN);
-                show_uart2_tiles();
-            }
-            break;
-        case 2: 
-            if (internal_container) {
-                lv_obj_clear_flag(internal_container, LV_OBJ_FLAG_HIDDEN);
-            }
-            show_internal_tiles(); 
-            break;
+    lv_obj_t *current_container = get_current_tab_container();
+    if (current_container) {
+        lv_obj_clear_flag(current_container, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (tab_is_internal(current_tab)) {
+        show_internal_tiles();
+    } else if (tab_is_uart2(current_tab)) {
+        show_uart2_tiles();
+    } else {
+        show_uart1_tiles();
     }
 }
 
@@ -7147,7 +7278,7 @@ static void observer_back_btn_event_cb(lv_event_t *e)
     if (ctx->observer_running) {
         // For UART1 (tab 0, Monster mode), stop observer
         // For UART2 (tab 1, Kraken mode), keep running in background
-        if (current_tab == 0) {
+        if (tab_is_uart1(current_tab)) {
             ctx->observer_running = false;
             
             if (ctx->observer_timer != NULL) {
@@ -8285,12 +8416,13 @@ static void global_handshaker_monitor_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "Global Handshaker monitor task started");
     
+    tab_id_t uart1_tab = uart1_preferred_tab();
     static char rx_buffer[512];
     static char line_buffer[512];
     int line_pos = 0;
     
     while (global_handshaker_monitoring) {
-        int len = transport_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        int len = transport_read_bytes_tab(uart1_tab, UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
             rx_buffer[len] = '\0';
@@ -8577,12 +8709,13 @@ static void phishing_portal_monitor_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "Phishing Portal monitor task started");
     
+    tab_id_t uart1_tab = uart1_preferred_tab();
     static char rx_buffer[512];
     static char line_buffer[512];
     int line_pos = 0;
     
     while (phishing_portal_monitoring) {
-        int len = transport_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        int len = transport_read_bytes_tab(uart1_tab, UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
             rx_buffer[len] = '\0';
@@ -8979,12 +9112,13 @@ static void wardrive_monitor_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "Wardrive monitor task started");
     
+    tab_id_t uart1_tab = uart1_preferred_tab();
     static char rx_buffer[512];
     static char line_buffer[512];
     int line_pos = 0;
     
     while (wardrive_monitoring) {
-        int len = transport_read_bytes(UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
+        int len = transport_read_bytes_tab(uart1_tab, UART_NUM, rx_buffer, sizeof(rx_buffer) - 1, pdMS_TO_TICKS(100));
         
         if (len > 0) {
             rx_buffer[len] = '\0';
@@ -9334,7 +9468,7 @@ static void show_evil_twin_passwords_page(void)
     lv_obj_set_style_pad_row(list_container, 8, 0);
     
     // Flush RX buffer to clear any boot messages from ESP32C5
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_port_t uart_port = uart_port_for_tab(current_tab);
     uart_flush_input(uart_port);
     
     // Send UART command and read response
@@ -10418,7 +10552,7 @@ static esp_err_t start_captive_portal(const char *ssid)
     ESP_LOGI(TAG, "Starting captive portal with SSID: %s", ssid);
     
     // Track which tab (UART) started the portal
-    portal_started_by_uart = current_tab + 1;  // 1=UART1, 2=UART2 (INTERNAL tab uses 0)
+    portal_started_by_uart = uart_index_for_tab(current_tab);  // 1=UART1, 2=UART2, 0=Internal
     
     // Ensure WiFi is initialized via ESP-Hosted
     if (!esp_modem_wifi_initialized) {
@@ -10733,7 +10867,7 @@ static void karma2_attack_background_cb(lv_event_t *e)
     portal_new_data_count = 0;
     
     // Remember which UART started the portal (1=UART1, 2=UART2)
-    portal_started_by_uart = (current_tab == 0) ? 1 : 2;
+    portal_started_by_uart = uart_index_for_tab(current_tab);
     ESP_LOGI(TAG, "Portal started by UART%d", portal_started_by_uart);
     
     // Close popup but keep portal running
@@ -10760,20 +10894,13 @@ static void switch_to_adhoc_portal_page(void)
     save_globals_to_tab_context(old_ctx);
     
     // Hide current container
-    switch (current_tab) {
-        case 0:
-            if (uart1_container) lv_obj_add_flag(uart1_container, LV_OBJ_FLAG_HIDDEN);
-            break;
-        case 1:
-            if (uart2_container) lv_obj_add_flag(uart2_container, LV_OBJ_FLAG_HIDDEN);
-            break;
-        case 2:
-            if (internal_container) lv_obj_add_flag(internal_container, LV_OBJ_FLAG_HIDDEN);
-            break;
+    lv_obj_t *old_container = get_container_for_tab(current_tab);
+    if (old_container) {
+        lv_obj_add_flag(old_container, LV_OBJ_FLAG_HIDDEN);
     }
     
-    // Switch to tab 2 (INTERNAL)
-    current_tab = 2;
+    // Switch to INTERNAL tab
+    current_tab = TAB_INTERNAL;
     update_tab_styles();
     
     // Restore INTERNAL tab context
@@ -10889,7 +11016,8 @@ static void parse_probes_from_buffer(char *buffer, const char *source_tag)
 
 static void adhoc_fetch_probes_from_all_uarts(void)
 {
-    ESP_LOGI(TAG, "Fetching probes from %s/UART2...", uart1_transport_name());
+    tab_id_t uart1_tab = uart1_preferred_tab();
+    ESP_LOGI(TAG, "Fetching probes from %s/UART2...", tab_transport_name(uart1_tab));
     
     adhoc_probe_count = 0;
     memset(adhoc_probes, 0, sizeof(adhoc_probes));
@@ -10900,8 +11028,8 @@ static void adhoc_fetch_probes_from_all_uarts(void)
     
     // ========== Fetch from UART1 ==========
     uart_flush(UART_NUM);
-    transport_write_bytes(UART_NUM, "list_probes\r\n", 13);
-    ESP_LOGI(TAG, "[%s] Sent: list_probes", uart1_transport_name());
+    transport_write_bytes_tab(uart1_tab, UART_NUM, "list_probes\r\n", 13);
+    ESP_LOGI(TAG, "[%s] Sent: list_probes", tab_transport_name(uart1_tab));
     
     vTaskDelay(pdMS_TO_TICKS(500));
     
@@ -10909,7 +11037,7 @@ static void adhoc_fetch_probes_from_all_uarts(void)
     total_len = 0;
     retries = 10;
     while (retries-- > 0) {
-        int len = transport_read_bytes(UART_NUM, rx_buffer + total_len, sizeof(rx_buffer) - total_len - 1, pdMS_TO_TICKS(200));
+        int len = transport_read_bytes_tab(uart1_tab, UART_NUM, rx_buffer + total_len, sizeof(rx_buffer) - total_len - 1, pdMS_TO_TICKS(200));
         if (len > 0) {
             total_len += len;
         }
@@ -10918,13 +11046,13 @@ static void adhoc_fetch_probes_from_all_uarts(void)
     
     if (total_len > 0) {
         rx_buffer[total_len] = '\0';
-        ESP_LOGI(TAG, "[%s] Received %d bytes", uart1_transport_name(), total_len);
-        ESP_LOGI(TAG, "[%s] Raw response:\n%s", uart1_transport_name(), rx_buffer);
+        ESP_LOGI(TAG, "[%s] Received %d bytes", tab_transport_name(uart1_tab), total_len);
+        ESP_LOGI(TAG, "[%s] Raw response:\n%s", tab_transport_name(uart1_tab), rx_buffer);
         
         // Parse probes using the same format as karma_show_probes_cb
-        parse_probes_from_buffer(rx_buffer, uart1_transport_name());
+        parse_probes_from_buffer(rx_buffer, tab_transport_name(uart1_tab));
     } else {
-        ESP_LOGW(TAG, "[%s] No response received", uart1_transport_name());
+        ESP_LOGW(TAG, "[%s] No response received", tab_transport_name(uart1_tab));
     }
     
     // ========== Fetch from UART2 if Kraken mode ==========
@@ -10967,6 +11095,7 @@ static void adhoc_show_probes_cb(lv_event_t *e)
 {
     (void)e;
     ESP_LOGI(TAG, "Show Probes button clicked on Ad Hoc Portal page");
+    tab_id_t uart1_tab = uart1_preferred_tab();
     
     // Fetch probes from all available UARTs
     adhoc_fetch_probes_from_all_uarts();
@@ -11003,9 +11132,9 @@ static void adhoc_show_probes_cb(lv_event_t *e)
     lv_obj_t *subtitle = lv_label_create(adhoc_probes_popup_obj);
     if (hw_config == 1) {
         lv_label_set_text_fmt(subtitle, "Found %d unique probes (%s + UART2)",
-                              adhoc_probe_count, uart1_transport_name());
+                              adhoc_probe_count, tab_transport_name(uart1_tab));
     } else {
-        lv_label_set_text_fmt(subtitle, "Found %d probes (%s)", adhoc_probe_count, uart1_transport_name());
+        lv_label_set_text_fmt(subtitle, "Found %d probes (%s)", adhoc_probe_count, tab_transport_name(uart1_tab));
     }
     lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(subtitle, lv_color_hex(0x888888), 0);
@@ -11481,7 +11610,7 @@ static void show_portal_data_page(void)
     lv_obj_set_style_pad_row(list_container, 8, 0);
     
     // Flush RX buffer to clear any boot messages from ESP32C5
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_port_t uart_port = uart_port_for_tab(current_tab);
     uart_flush_input(uart_port);
     
     // Send UART command and read response
@@ -11665,7 +11794,7 @@ static void show_handshakes_page(void)
     lv_obj_set_style_pad_row(list_container, 8, 0);
     
     // Flush RX buffer to clear any boot messages from ESP32C5
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_port_t uart_port = uart_port_for_tab(current_tab);
     uart_flush_input(uart_port);
     
     // Send UART command and read response
@@ -12701,7 +12830,7 @@ static void show_bt_scan_page(void)
     vTaskDelay(pdMS_TO_TICKS(100));
     
     // Flush any stale UART data before scanning
-    uart_port_t uart_port = (current_tab == 1 && uart2_initialized) ? UART2_NUM : UART_NUM;
+    uart_port_t uart_port = uart_port_for_tab(current_tab);
     uart_flush_input(uart_port);
     
     // Send scan command to current tab's UART
@@ -13439,31 +13568,26 @@ static void detect_boards(void)
     // Ensure USB CDC host is started before detection
     usb_transport_init();
 
-    // Detect UART1 transport (prefer Grove if it answers even when USB is connected)
-    if (usb_cdc_connected) {
-        bool grove_detected = ping_uart_direct(UART_NUM, "Grove");
-        if (grove_detected) {
-            uart1_force_grove = true;
-            uart1_detected = true;
-            ESP_LOGI(TAG, "[USB] CDC connected - Grove detected, preferring Grove transport");
-        } else {
-            uart1_force_grove = false;
-            uart1_detected = true;
-            ESP_LOGI(TAG, "[USB] CDC connected - using USB transport");
-        }
-    } else {
-        uart1_force_grove = false;
-        uart1_detected = ping_uart(UART_NUM, uart1_transport_name());
+    // Detect Grove on UART1 and USB CDC independently
+    grove_detected = ping_uart_direct(UART_NUM, "Grove");
+    usb_detected = usb_cdc_connected;
+    uart1_detected = (grove_detected || usb_detected);
+
+    if (usb_detected && grove_detected) {
+        ESP_LOGI(TAG, "[USB] CDC connected and Grove detected - both transports available");
+    } else if (usb_detected) {
+        ESP_LOGI(TAG, "[USB] CDC connected - USB transport available");
     }
+
     uart2_detected = ping_uart(UART2_NUM, "UART2");
     
     // Determine hardware configuration
     if (uart1_detected && uart2_detected) {
         hw_config = 1;  // Kraken mode - both UARTs
-        ESP_LOGI(TAG, "Hardware config: Kraken (%s + UART2)", uart1_transport_name());
+        ESP_LOGI(TAG, "Hardware config: Kraken (Grove/USB + UART2)");
     } else if (uart1_detected) {
         hw_config = 0;  // Monster mode - only UART1
-        ESP_LOGI(TAG, "Hardware config: Monster (%s only)", uart1_transport_name());
+        ESP_LOGI(TAG, "Hardware config: Monster (Grove/USB only)");
     } else if (uart2_detected) {
         // Only UART2 detected - treat as Monster but log warning
         hw_config = 0;
@@ -13473,9 +13597,9 @@ static void detect_boards(void)
         ESP_LOGW(TAG, "No boards detected on either port!");
     }
     
-    ESP_LOGI(TAG, "=== Board detection complete: %s=%s, UART2=%s ===",
-             uart1_transport_name(),
-             uart1_detected ? "YES" : "NO",
+    ESP_LOGI(TAG, "=== Board detection complete: Grove=%s, USB=%s, UART2=%s ===",
+             grove_detected ? "YES" : "NO",
+             usb_detected ? "YES" : "NO",
              uart2_detected ? "YES" : "NO");
 }
 
@@ -14273,10 +14397,10 @@ static void invalidate_red_team_dependent_pages(void)
 {
     ESP_LOGI(TAG, "Invalidating Red Team dependent pages");
     
-    // Invalidate pages for both UART tab contexts
-    tab_context_t *contexts[] = { &uart1_ctx, &uart2_ctx };
+    // Invalidate pages for transport tab contexts
+    tab_context_t *contexts[] = { &grove_ctx, &usb_ctx, &uart2_ctx };
     
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         tab_context_t *ctx = contexts[i];
         
         // Delete cached scan page (has Attack/Test tiles)
