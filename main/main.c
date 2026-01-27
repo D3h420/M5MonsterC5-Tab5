@@ -1367,24 +1367,43 @@ static void uart_init(void)
              tx_pin, rx_pin, UART_BAUD_RATE);
 }
 
+// Log memory statistics
+static void log_memory_stats(const char *context)
+{
+    size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA);
+    size_t dma_min = heap_caps_get_minimum_free_size(MALLOC_CAP_DMA);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t psram_min = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    
+    ESP_LOGI(TAG, "[MEM:%s] INTERNAL: %zu free, %zu min | DMA: %zu free, %zu min | PSRAM: %zu free, %zu min",
+             context,
+             internal_free, internal_min,
+             dma_free, dma_min,
+             psram_free, psram_min);
+}
+
 // Send command over UART1 (primary)
 static void uart_send_command(const char *cmd)
 {
+    log_memory_stats("TX1");
     uart_write_bytes(UART_NUM, cmd, strlen(cmd));
     uart_write_bytes(UART_NUM, "\r\n", 2);
-    ESP_LOGI(TAG, "[UART1] Sent command: %s", cmd);
+    ESP_LOGI(TAG, "[Grove] Sent command: %s", cmd);
 }
 
 // Send command over UART2 (secondary, Kraken mode only)
 static void uart2_send_command(const char *cmd)
 {
     if (!uart2_initialized) {
-        ESP_LOGW(TAG, "[UART2] Not initialized (Kraken mode disabled)");
+        ESP_LOGW(TAG, "[M-Bus] Not initialized");
         return;
     }
+    log_memory_stats("TX2");
     uart_write_bytes(UART2_NUM, cmd, strlen(cmd));
     uart_write_bytes(UART2_NUM, "\r\n", 2);
-    ESP_LOGI(TAG, "[UART2] Sent command: %s", cmd);
+    ESP_LOGI(TAG, "[M-Bus] Sent command: %s", cmd);
 }
 
 // Parse a single network line like: "1","SSID","","C4:2B:44:12:29:21","1","WPA2","-53","2.4GHz"
@@ -1465,12 +1484,13 @@ static void wifi_scan_task(void *arg)
     uart_flush(uart_port);
     
     // Send scan command to the correct UART
+    log_memory_stats("TX-scan");
     if (scan_tab == 1 && uart2_initialized) {
         uart_write_bytes(UART2_NUM, "scan_networks\r\n", 15);
-        ESP_LOGI(TAG, "[UART2] Sent command: scan_networks");
+        ESP_LOGI(TAG, "[M-Bus] Sent command: scan_networks");
     } else {
         uart_write_bytes(UART_NUM, "scan_networks\r\n", 15);
-        ESP_LOGI(TAG, "[UART1] Sent command: scan_networks");
+        ESP_LOGI(TAG, "[Grove] Sent command: scan_networks");
     }
     
     // Buffer for receiving data
@@ -1529,6 +1549,7 @@ static void wifi_scan_task(void *arg)
         ESP_LOGW(TAG, "[%s] Scan timed out", uart_name);
     }
     
+    log_memory_stats("RX-scan");
     ESP_LOGI(TAG, "[%s] Scan finished. Found %d networks", uart_name, network_count);
     
     // Update UI on main thread
@@ -13072,6 +13093,7 @@ static bool ping_uart(uart_port_t uart_port, const char *uart_name)
             
             // Check if we received "pong"
             if (strstr((char*)rx_buffer, "pong") != NULL) {
+                log_memory_stats(uart_name);
                 ESP_LOGI(TAG, "[%s] Received pong - board detected!", uart_name);
                 return true;
             }
