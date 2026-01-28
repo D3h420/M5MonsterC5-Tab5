@@ -22,6 +22,8 @@
 #include "lvgl.h"
 #include "iot_usbh_cdc.h"
 #include "usb/usb_host.h"
+#include "usb/usb_helpers.h"
+#include "usb/usb_types_ch9.h"
 
 // ESP-Hosted includes for WiFi via ESP32C6 SDIO
 #include "esp_hosted.h"
@@ -1436,6 +1438,207 @@ static bool usb_host_started_by_us = false;
 static uint32_t usb_next_retry_ms = 0;
 static bool usb_log_tuned = false;
 static bool board_redetect_pending = false;
+static bool usb_debug_logs = true;
+static bool usb_cdc_preferred_valid = false;
+static uint8_t usb_cdc_preferred_itf = 0;
+static uint16_t usb_last_vid = 0;
+static uint16_t usb_last_pid = 0;
+
+#define CP210X_VID 0x10C4
+#define CP210X_REQTYPE_HOST_TO_DEVICE 0x41
+#define CP210X_IFC_ENABLE 0x00
+#define CP210X_SET_LINE_CTL 0x03
+#define CP210X_SET_MHS 0x07
+#define CP210X_SET_BAUDRATE 0x1E
+
+#define CP210X_UART_ENABLE 0x0001
+
+#define CP210X_BITS_DATA_8 0x0800
+#define CP210X_BITS_PARITY_NONE 0x0000
+#define CP210X_BITS_STOP_1 0x0000
+
+#define CP210X_CONTROL_DTR 0x0001
+#define CP210X_CONTROL_RTS 0x0002
+#define CP210X_CONTROL_WRITE_DTR 0x0100
+#define CP210X_CONTROL_WRITE_RTS 0x0200
+
+static void cp210x_send_simple_request(uint8_t request, uint16_t value, uint16_t index)
+{
+    if (!usb_cdc_handle) {
+        return;
+    }
+    esp_err_t err = usbh_cdc_send_custom_request(usb_cdc_handle,
+                                                 CP210X_REQTYPE_HOST_TO_DEVICE,
+                                                 request,
+                                                 value,
+                                                 index,
+                                                 0,
+                                                 NULL);
+    if (usb_debug_logs && err != ESP_OK) {
+        ESP_LOGW(TAG, "[USB][CP210X] request 0x%02X failed: %s", request, esp_err_to_name(err));
+    }
+}
+
+static void cp210x_send_baudrate(uint32_t baud, uint16_t index)
+{
+    if (!usb_cdc_handle) {
+        return;
+    }
+    uint8_t data[4];
+    data[0] = (uint8_t)(baud & 0xFF);
+    data[1] = (uint8_t)((baud >> 8) & 0xFF);
+    data[2] = (uint8_t)((baud >> 16) & 0xFF);
+    data[3] = (uint8_t)((baud >> 24) & 0xFF);
+    esp_err_t err = usbh_cdc_send_custom_request(usb_cdc_handle,
+                                                 CP210X_REQTYPE_HOST_TO_DEVICE,
+                                                 CP210X_SET_BAUDRATE,
+                                                 0,
+                                                 index,
+                                                 sizeof(data),
+                                                 data);
+    if (usb_debug_logs && err != ESP_OK) {
+        ESP_LOGW(TAG, "[USB][CP210X] SET_BAUDRATE failed: %s", esp_err_to_name(err));
+    }
+}
+
+static void cp210x_init_port(uint16_t index)
+{
+    uint16_t line_ctl = CP210X_BITS_DATA_8 | CP210X_BITS_PARITY_NONE | CP210X_BITS_STOP_1;
+    uint16_t mhs = CP210X_CONTROL_WRITE_DTR | CP210X_CONTROL_WRITE_RTS |
+                   CP210X_CONTROL_DTR | CP210X_CONTROL_RTS;
+
+    cp210x_send_simple_request(CP210X_IFC_ENABLE, CP210X_UART_ENABLE, index);
+    cp210x_send_simple_request(CP210X_SET_LINE_CTL, line_ctl, index);
+    cp210x_send_baudrate(UART_BAUD_RATE, index);
+    cp210x_send_simple_request(CP210X_SET_MHS, mhs, index);
+
+    if (usb_debug_logs) {
+        ESP_LOGI(TAG, "[USB][CP210X] init done: itf=%u baud=%u line=0x%04X mhs=0x%04X",
+                 index, (unsigned)UART_BAUD_RATE, line_ctl, mhs);
+    }
+}
+
+static void usb_cdc_new_dev_cb(usb_device_handle_t usb_dev, void *user_data)
+{
+    (void)user_data;
+
+    const usb_device_desc_t *device_desc = NULL;
+    const usb_config_desc_t *config_desc = NULL;
+    esp_err_t dev_err = usb_host_get_device_descriptor(usb_dev, &device_desc);
+    esp_err_t cfg_err = usb_host_get_active_config_descriptor(usb_dev, &config_desc);
+    if (dev_err != ESP_OK || cfg_err != ESP_OK || !device_desc || !config_desc) {
+        if (usb_debug_logs) {
+            ESP_LOGW(TAG, "[USB] new_dev_cb: desc error dev=%s cfg=%s",
+                     esp_err_to_name(dev_err), esp_err_to_name(cfg_err));
+        }
+        return;
+    }
+
+    usb_last_vid = device_desc->idVendor;
+    usb_last_pid = device_desc->idProduct;
+    usb_cdc_preferred_valid = false;
+    usb_cdc_preferred_itf = 0;
+
+    int desc_offset = 0;
+    const usb_standard_desc_t *this_desc = (const usb_standard_desc_t *)config_desc;
+    while ((this_desc = usb_parse_next_descriptor_of_type(this_desc,
+                                                         config_desc->wTotalLength,
+                                                         USB_B_DESCRIPTOR_TYPE_INTERFACE,
+                                                         &desc_offset))) {
+        const usb_intf_desc_t *intf_desc = (const usb_intf_desc_t *)this_desc;
+        if (intf_desc->bInterfaceClass == USB_CLASS_CDC_DATA) {
+            usb_cdc_preferred_itf = intf_desc->bInterfaceNumber;
+            usb_cdc_preferred_valid = true;
+            break;
+        }
+    }
+
+    if (!usb_cdc_preferred_valid) {
+        int intf_offset = 0;
+        const usb_standard_desc_t *intf_desc_std = (const usb_standard_desc_t *)config_desc;
+        while ((intf_desc_std = usb_parse_next_descriptor_of_type(intf_desc_std,
+                                                                  config_desc->wTotalLength,
+                                                                  USB_B_DESCRIPTOR_TYPE_INTERFACE,
+                                                                  &intf_offset))) {
+            const usb_intf_desc_t *intf_desc = (const usb_intf_desc_t *)intf_desc_std;
+            int desc_off = intf_offset;
+            int temp_off = desc_off;
+            bool has_in = false;
+            bool has_out = false;
+
+            for (int i = 0; i < intf_desc->bNumEndpoints; i++) {
+                const usb_ep_desc_t *ep_desc = usb_parse_endpoint_descriptor_by_index(intf_desc, i,
+                                                                                      config_desc->wTotalLength,
+                                                                                      &desc_off);
+                if (!ep_desc) {
+                    continue;
+                }
+                if (USB_EP_DESC_GET_XFERTYPE(ep_desc) == USB_TRANSFER_TYPE_BULK) {
+                    if (USB_EP_DESC_GET_EP_DIR(ep_desc)) {
+                        has_in = true;
+                    } else {
+                        has_out = true;
+                    }
+                }
+                desc_off = temp_off;
+            }
+
+            if (has_in && has_out) {
+                usb_cdc_preferred_itf = intf_desc->bInterfaceNumber;
+                usb_cdc_preferred_valid = true;
+                if (usb_debug_logs) {
+                    ESP_LOGI(TAG, "[USB] Fallback bulk interface selected: itf=%u class=0x%02X",
+                             usb_cdc_preferred_itf, intf_desc->bInterfaceClass);
+                }
+                break;
+            }
+        }
+    }
+
+    if (usb_debug_logs) {
+        ESP_LOGI(TAG, "[USB] new_dev_cb: vid=0x%04X pid=0x%04X class=0x%02X pref_itf=%u valid=%d",
+                 device_desc->idVendor,
+                 device_desc->idProduct,
+                 device_desc->bDeviceClass,
+                 usb_cdc_preferred_itf,
+                 usb_cdc_preferred_valid);
+    }
+}
+
+static const char *usb_cdc_state_str(usbh_cdc_state_t state)
+{
+    switch (state) {
+        case USBH_CDC_CLOSE: return "CLOSE";
+        case USBH_CDC_OPEN: return "OPEN";
+        default: return "UNKNOWN";
+    }
+}
+
+static void usb_log_cdc_state(const char *where)
+{
+    if (!usb_cdc_handle) {
+        ESP_LOGI(TAG, "[USB] %s: handle=NULL connected=%d transport_ready=%d",
+                 where, usb_cdc_connected, usb_transport_ready);
+        return;
+    }
+
+    usbh_cdc_state_t state = USBH_CDC_CLOSE;
+    esp_err_t state_err = usbh_cdc_get_state(usb_cdc_handle, &state);
+    size_t rx_size = 0;
+    esp_err_t rx_err = usbh_cdc_get_rx_buffer_size(usb_cdc_handle, &rx_size);
+
+    ESP_LOGI(TAG,
+             "[USB] %s: handle=%p connected=%d transport_ready=%d state=%s(%d) state_err=%s rx_buf=%u rx_err=%s",
+             where,
+             (void *)usb_cdc_handle,
+             usb_cdc_connected,
+             usb_transport_ready,
+             usb_cdc_state_str(state),
+             (int)state,
+             esp_err_to_name(state_err),
+             (unsigned)rx_size,
+             esp_err_to_name(rx_err));
+}
 
 static void board_redetect_cb(void *user_data)
 {
@@ -1499,8 +1702,11 @@ static void usb_check_host_installed(void)
 static void usb_cdc_connect_cb(usbh_cdc_handle_t cdc_handle, void *user_data)
 {
     (void)user_data;
+    usb_cdc_handle = cdc_handle;
     usb_cdc_connected = true;
-    ESP_LOGI(TAG, "[USB] CDC device connected");
+    usb_transport_ready = true;
+    usb_transport_warned = false;
+    ESP_LOGI(TAG, "[USB] CDC device connected (handle=%p)", (void *)cdc_handle);
     
     // Note: SET_LINE_CODING and SET_CONTROL_LINE_STATE are skipped because:
     // 1. They cause 5-second blocking timeouts
@@ -1508,7 +1714,20 @@ static void usb_cdc_connect_cb(usbh_cdc_handle_t cdc_handle, void *user_data)
     // 3. Data transfer works without them for this device type
     
     // Flush any stale data in the RX buffer
-    usbh_cdc_flush_rx_buffer(cdc_handle);
+    esp_err_t flush_err = usbh_cdc_flush_rx_buffer(cdc_handle);
+    if (flush_err != ESP_OK) {
+        ESP_LOGW(TAG, "[USB] Flush RX buffer failed on connect: %s", esp_err_to_name(flush_err));
+    }
+
+    if (usb_debug_logs) {
+        esp_err_t desc_err = usbh_cdc_desc_print(cdc_handle);
+        ESP_LOGI(TAG, "[USB] CDC descriptor dump: %s", esp_err_to_name(desc_err));
+        usb_log_cdc_state("connect");
+    }
+
+    if (usb_last_vid == CP210X_VID) {
+        cp210x_init_port(usb_cdc_preferred_itf);
+    }
     
     schedule_board_redetect();
 }
@@ -1517,8 +1736,20 @@ static void usb_cdc_disconnect_cb(usbh_cdc_handle_t cdc_handle, void *user_data)
 {
     (void)cdc_handle;
     (void)user_data;
+    if (usb_cdc_handle == cdc_handle) {
+        usb_cdc_handle = NULL;
+    }
     usb_cdc_connected = false;
+    usb_transport_ready = false;
+    usb_transport_warned = false;
+    usb_cdc_preferred_valid = false;
+    usb_cdc_preferred_itf = 0;
+    usb_last_vid = 0;
+    usb_last_pid = 0;
     ESP_LOGW(TAG, "[USB] CDC device disconnected");
+    if (usb_debug_logs) {
+        usb_log_cdc_state("disconnect");
+    }
     schedule_board_redetect();
 }
 
@@ -1531,8 +1762,20 @@ static void usb_cdc_recv_cb(usbh_cdc_handle_t cdc_handle, void *user_data)
 static void usb_cdc_notif_cb(usbh_cdc_handle_t cdc_handle, iot_cdc_notification_t *notif, void *user_data)
 {
     (void)cdc_handle;
-    (void)notif;
     (void)user_data;
+    if (!usb_debug_logs) {
+        return;
+    }
+    if (!notif) {
+        ESP_LOGW(TAG, "[USB] CDC notification: NULL");
+        return;
+    }
+    ESP_LOGI(TAG, "[USB] CDC notification: bmReq=0x%02X code=0x%02X wValue=0x%04X wIndex=0x%04X wLen=%u",
+             notif->bmRequestType,
+             notif->bNotificationCode,
+             notif->wValue,
+             notif->wIndex,
+             notif->wLength);
 }
 
 static void usb_transport_init(void)
@@ -1552,9 +1795,15 @@ static void usb_transport_init(void)
     }
 
     if (!usb_log_tuned) {
-        esp_log_level_set("USBH_CDC", ESP_LOG_NONE);
-        esp_log_level_set("USBH", ESP_LOG_NONE);
-        esp_log_level_set("USB HOST", ESP_LOG_NONE);
+        if (usb_debug_logs) {
+            esp_log_level_set("USBH_CDC", ESP_LOG_INFO);
+            esp_log_level_set("USBH", ESP_LOG_INFO);
+            esp_log_level_set("USB HOST", ESP_LOG_INFO);
+        } else {
+            esp_log_level_set("USBH_CDC", ESP_LOG_NONE);
+            esp_log_level_set("USBH", ESP_LOG_NONE);
+            esp_log_level_set("USB HOST", ESP_LOG_NONE);
+        }
         usb_log_tuned = true;
     }
 
@@ -1577,9 +1826,13 @@ static void usb_transport_init(void)
         .task_priority = 5,
         .task_coreid = -1,
         .skip_init_usb_host_driver = true,
-        .new_dev_cb = NULL,
+        .new_dev_cb = usb_cdc_new_dev_cb,
         .user_data = NULL,
     };
+    if (usb_debug_logs) {
+        ESP_LOGI(TAG, "[USB] CDC driver config: stack=%d prio=%d core=%d",
+                 config.task_stack_size, config.task_priority, config.task_coreid);
+    }
 
     esp_err_t err = usbh_cdc_driver_install(&config);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -1587,10 +1840,24 @@ static void usb_transport_init(void)
         return;
     }
 
+    if (usb_debug_logs) {
+        ESP_LOGI(TAG, "[USB] Waiting for new_dev_cb...");
+    }
+    for (int i = 0; i < 5 && !usb_cdc_preferred_valid; i++) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    if (!usb_cdc_preferred_valid) {
+        if (usb_debug_logs) {
+            ESP_LOGW(TAG, "[USB] No CDC-DATA or bulk IN/OUT interface found, ignoring device");
+        }
+        return;
+    }
+
     usbh_cdc_device_config_t dev_config = {
         .vid = CDC_HOST_ANY_VID,
         .pid = CDC_HOST_ANY_PID,
-        .itf_num = 0,
+        .itf_num = usb_cdc_preferred_valid ? usb_cdc_preferred_itf : 0,
         .rx_buffer_size = UART_BUF_SIZE,
         .tx_buffer_size = UART_BUF_SIZE,
         .cbs = {
@@ -1601,6 +1868,11 @@ static void usb_transport_init(void)
             .user_data = NULL,
         },
     };
+    if (usb_debug_logs) {
+        ESP_LOGI(TAG, "[USB] CDC device config: vid=0x%04X pid=0x%04X itf=%d rx=%u tx=%u",
+                 dev_config.vid, dev_config.pid, dev_config.itf_num,
+                 (unsigned)dev_config.rx_buffer_size, (unsigned)dev_config.tx_buffer_size);
+    }
 
     err = usbh_cdc_create(&dev_config, &usb_cdc_handle);
     if (err != ESP_OK) {
@@ -1655,6 +1927,9 @@ static int usb_transport_write(const char *data, size_t len)
     esp_err_t err = usbh_cdc_write_bytes(usb_cdc_handle, (const uint8_t *)data, len, pdMS_TO_TICKS(200));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "[USB] CDC write failed: %s", esp_err_to_name(err));
+        if (usb_debug_logs) {
+            usb_log_cdc_state("write_failed");
+        }
         return 0;
     }
     
@@ -1673,14 +1948,29 @@ static int usb_transport_read(void *data, size_t len, TickType_t ticks_to_wait)
                  (void*)usb_cdc_handle, usb_cdc_connected);
         return 0;
     }
+    size_t rx_size = 0;
+    esp_err_t rx_err = usbh_cdc_get_rx_buffer_size(usb_cdc_handle, &rx_size);
+    if (rx_err == ESP_OK && rx_size == 0) {
+        if (ticks_to_wait > 0) {
+            vTaskDelay(ticks_to_wait);
+            rx_err = usbh_cdc_get_rx_buffer_size(usb_cdc_handle, &rx_size);
+        }
+        if (rx_err == ESP_OK && rx_size == 0) {
+            return 0;
+        }
+    }
+
     size_t read_len = len;
-    esp_err_t err = usbh_cdc_read_bytes(usb_cdc_handle, (uint8_t *)data, &read_len, ticks_to_wait);
+    esp_err_t err = usbh_cdc_read_bytes(usb_cdc_handle, (uint8_t *)data, &read_len, 0);
     if (err != ESP_OK) {
         // ESP_FAIL often means no data available - treat as timeout (normal during polling)
         // ESP_ERR_TIMEOUT is also normal
         // Only log actual unexpected errors
         if (err != ESP_ERR_TIMEOUT && err != ESP_FAIL) {
             ESP_LOGW(TAG, "[USB] CDC read error: %s (0x%x)", esp_err_to_name(err), err);
+            if (usb_debug_logs) {
+                usb_log_cdc_state("read_error");
+            }
         }
         return 0;
     }
@@ -1702,6 +1992,26 @@ static int usb_transport_read(void *data, size_t len, TickType_t ticks_to_wait)
     return (int)read_len;
 }
 
+static void usb_flush_input(uint32_t max_ms)
+{
+    if (!usb_cdc_handle || !usb_cdc_connected) {
+        return;
+    }
+    uint8_t tmp[64];
+    uint32_t start_ms = esp_timer_get_time() / 1000;
+    while ((esp_timer_get_time() / 1000) - start_ms < max_ms) {
+        size_t rx_size = 0;
+        if (usbh_cdc_get_rx_buffer_size(usb_cdc_handle, &rx_size) != ESP_OK || rx_size == 0) {
+            break;
+        }
+        size_t read_len = rx_size > sizeof(tmp) ? sizeof(tmp) : rx_size;
+        usbh_cdc_read_bytes(usb_cdc_handle, tmp, &read_len, 0);
+    }
+    if (usb_debug_logs) {
+        ESP_LOGI(TAG, "[USB] Flushed input for %u ms", (unsigned)max_ms);
+    }
+}
+
 // Ping USB device to verify it responds (similar to ping_uart_direct for Grove/MBus)
 static bool ping_usb(void)
 {
@@ -1710,8 +2020,8 @@ static bool ping_usb(void)
         return false;
     }
     
-    // Flush RX buffer before ping
-    usbh_cdc_flush_rx_buffer(usb_cdc_handle);
+    // Flush RX buffer before ping (drain any boot/menu spam)
+    usb_flush_input(200);
     
     // Send ping command
     const char *ping_cmd = "ping\r\n";
@@ -1727,6 +2037,9 @@ static bool ping_usb(void)
     int total = 0;
     for (int i = 0; i < 10; i++) {
         int n = usb_transport_read(buf + total, sizeof(buf) - total - 1, pdMS_TO_TICKS(50));
+        if (usb_debug_logs && n == 0) {
+            ESP_LOGD(TAG, "[USB] Ping wait %d/10: no data", i + 1);
+        }
         if (n > 0) {
             total += n;
             buf[total] = '\0';
@@ -1737,6 +2050,9 @@ static bool ping_usb(void)
         }
     }
     
+    if (usb_debug_logs && total > 0) {
+        ESP_LOGW(TAG, "[USB] No pong response, partial data: \"%s\"", buf);
+    }
     ESP_LOGW(TAG, "[USB] No pong response - device not detected");
     return false;
 }
@@ -13739,6 +14055,9 @@ static void detect_boards(void)
     // Detect each device independently using ping/pong
     grove_detected = ping_uart_direct(UART_NUM, "Grove");
     usb_detected = usb_cdc_connected ? ping_usb() : false;  // Must respond to ping, not just be connected
+    if (usb_cdc_connected && !usb_detected && usb_debug_logs) {
+        usb_log_cdc_state("detect_boards_usb_ping_failed");
+    }
     uart1_detected = (grove_detected || usb_detected);  // For legacy compatibility
     mbus_detected = ping_uart(UART2_NUM, "MBus");
 
