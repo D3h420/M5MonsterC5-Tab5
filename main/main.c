@@ -9608,8 +9608,9 @@ static void do_phishing_portal_start(void)
     
     // Get selected HTML index
     int html_idx = lv_dropdown_get_selected(phishing_portal_html_dropdown);
+    html_idx++;  // Convert to 1-based index for command
     
-    ESP_LOGI(TAG, "Starting Phishing Portal - SSID: %s, HTML index: %d", phishing_portal_ssid, html_idx);
+    ESP_LOGI(TAG, "Starting Phishing Portal - SSID: %s, HTML index converted: %d", phishing_portal_ssid, html_idx);
     
     // Close setup popup first
     close_phishing_portal_popup();
