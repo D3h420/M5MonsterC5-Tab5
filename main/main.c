@@ -875,10 +875,10 @@ static lv_obj_t *scan_overlay = NULL;
 static lv_obj_t *splash_screen = NULL;
 static lv_obj_t *splash_label = NULL;
 static lv_obj_t *splash_subtitle = NULL;
-static lv_obj_t *splash_card = NULL;
-static lv_obj_t *splash_shine = NULL;
-static lv_obj_t *splash_orb_top = NULL;
-static lv_obj_t *splash_orb_bottom = NULL;
+static lv_obj_t *splash_status = NULL;
+static lv_obj_t *splash_frame_box = NULL;
+static lv_obj_t *splash_scanline = NULL;
+static lv_obj_t *splash_grid_overlay = NULL;
 static lv_timer_t *splash_timer = NULL;
 static int splash_frame = 0;
 
@@ -2684,21 +2684,21 @@ static void hide_evil_twin_loading_overlay(void) {
 }
 
 //==================================================================================
-// Startup Splash Screen (iOS Dark Glass style)
+// Startup Splash Screen (Cyber Tech style)
 //==================================================================================
 
 #define SPLASH_TICK_MS            40
-#define SPLASH_TOTAL_FRAMES       64
-#define SPLASH_CARD_FADE_END      18
+#define SPLASH_TOTAL_FRAMES       72
+#define SPLASH_SCAN_START         4
+#define SPLASH_SCAN_END           48
 #define SPLASH_TITLE_IN_START     8
-#define SPLASH_TITLE_IN_END       28
-#define SPLASH_SUB_IN_START       16
-#define SPLASH_SUB_IN_END         34
-#define SPLASH_SHINE_START        24
-#define SPLASH_SHINE_END          44
-#define SPLASH_FADE_OUT_START     52
+#define SPLASH_TITLE_GLITCH_END   34
+#define SPLASH_SUB_IN_START       22
+#define SPLASH_STATUS_IN_START    16
+#define SPLASH_STABLE_START       36
+#define SPLASH_FADE_OUT_START     58
 
-// Splash timer callback - cinematic glass reveal
+// Splash timer callback - cyber tech boot sequence
 static void splash_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
@@ -2718,10 +2718,10 @@ static void splash_timer_cb(lv_timer_t *timer)
             splash_screen = NULL;
             splash_label = NULL;
             splash_subtitle = NULL;
-            splash_card = NULL;
-            splash_shine = NULL;
-            splash_orb_top = NULL;
-            splash_orb_bottom = NULL;
+            splash_status = NULL;
+            splash_frame_box = NULL;
+            splash_scanline = NULL;
+            splash_grid_overlay = NULL;
         }
 
         // Show detection popup - it will wait for devices and then build UI
@@ -2729,89 +2729,107 @@ static void splash_timer_cb(lv_timer_t *timer)
         return;
     }
 
-    // Card fade-in
-    if (splash_card) {
-        int32_t card_opa = 90;
-        if (splash_frame <= SPLASH_CARD_FADE_END) {
-            card_opa = (splash_frame * 90) / SPLASH_CARD_FADE_END;
+    if (splash_grid_overlay) {
+        int32_t grid_opa = (splash_frame * 210) / SPLASH_STABLE_START;
+        if (splash_frame > SPLASH_STABLE_START) {
+            int32_t pulse = splash_frame % 10;
+            pulse = (pulse <= 5) ? pulse : (10 - pulse);
+            grid_opa = 160 + (pulse * 6);
         }
-        lv_obj_set_style_opa(splash_card, (lv_opa_t)LV_CLAMP(0, card_opa, 255), 0);
-
-        int32_t glow_phase = splash_frame % 18;
-        int32_t glow = (glow_phase <= 9) ? glow_phase : (18 - glow_phase);
-        int32_t border_opa = 92 + (glow * 5);
-        lv_obj_set_style_border_opa(splash_card, (lv_opa_t)LV_CLAMP(60, border_opa, 180), 0);
+        lv_obj_set_style_opa(splash_grid_overlay, (lv_opa_t)LV_CLAMP(0, grid_opa, 210), 0);
     }
 
-    // Orbs breathing for smoother gradients (reduces visible banding)
-    if (splash_orb_top) {
-        int32_t phase = splash_frame % 22;
-        int32_t pulse = (phase <= 11) ? phase : (22 - phase);
-        int32_t orb_opa = 26 + (pulse * 3);
-        lv_obj_set_style_bg_opa(splash_orb_top, (lv_opa_t)LV_CLAMP(20, orb_opa, 70), 0);
-    }
-    if (splash_orb_bottom) {
-        int32_t phase = (splash_frame + 8) % 24;
-        int32_t pulse = (phase <= 12) ? phase : (24 - phase);
-        int32_t orb_opa = 22 + (pulse * 2);
-        lv_obj_set_style_bg_opa(splash_orb_bottom, (lv_opa_t)LV_CLAMP(18, orb_opa, 60), 0);
+    if (splash_frame_box) {
+        int32_t phase = splash_frame % 20;
+        int32_t pulse = (phase <= 10) ? phase : (20 - phase);
+        int32_t border_opa = 110 + (pulse * 9);
+        lv_obj_set_style_border_opa(splash_frame_box, (lv_opa_t)LV_CLAMP(90, border_opa, 220), 0);
+        lv_obj_set_style_shadow_opa(splash_frame_box, (lv_opa_t)LV_CLAMP(20, 28 + (pulse * 4), 80), 0);
     }
 
-    // Title reveal (LAB5)
-    if (splash_label) {
-        int32_t opa = 0;
-        if (splash_frame >= SPLASH_TITLE_IN_START) {
-            if (splash_frame >= SPLASH_TITLE_IN_END) {
-                opa = 255;
-            } else {
-                opa = ((splash_frame - SPLASH_TITLE_IN_START) * 255) /
-                      (SPLASH_TITLE_IN_END - SPLASH_TITLE_IN_START);
-            }
-        }
-        int32_t y = -18;
-        if (splash_frame < SPLASH_TITLE_IN_END) {
-            int32_t p = LV_CLAMP(0, splash_frame - SPLASH_TITLE_IN_START, SPLASH_TITLE_IN_END - SPLASH_TITLE_IN_START);
-            y += 12 - ((p * 12) / (SPLASH_TITLE_IN_END - SPLASH_TITLE_IN_START));
-        }
-        lv_obj_set_style_text_opa(splash_label, (lv_opa_t)LV_CLAMP(0, opa, 255), 0);
-        lv_obj_align(splash_label, LV_ALIGN_CENTER, 0, y);
-    }
-
-    // Subtitle reveal (JanOS x Tab5)
-    if (splash_subtitle) {
-        int32_t opa = 0;
-        if (splash_frame >= SPLASH_SUB_IN_START) {
-            if (splash_frame >= SPLASH_SUB_IN_END) {
-                opa = 230;
-            } else {
-                opa = ((splash_frame - SPLASH_SUB_IN_START) * 230) /
-                      (SPLASH_SUB_IN_END - SPLASH_SUB_IN_START);
-            }
-        }
-        int32_t y = 44;
-        if (splash_frame < SPLASH_SUB_IN_END) {
-            int32_t p = LV_CLAMP(0, splash_frame - SPLASH_SUB_IN_START, SPLASH_SUB_IN_END - SPLASH_SUB_IN_START);
-            y += 8 - ((p * 8) / (SPLASH_SUB_IN_END - SPLASH_SUB_IN_START));
-        }
-        lv_obj_set_style_text_opa(splash_subtitle, (lv_opa_t)LV_CLAMP(0, opa, 230), 0);
-        lv_obj_align(splash_subtitle, LV_ALIGN_CENTER, 0, y);
-    }
-
-    // Glass sheen pass
-    if (splash_shine && splash_card) {
-        if (splash_frame >= SPLASH_SHINE_START && splash_frame <= SPLASH_SHINE_END) {
-            int32_t pass_frame = splash_frame - SPLASH_SHINE_START;
-            int32_t pass_total = SPLASH_SHINE_END - SPLASH_SHINE_START;
-            int32_t card_w = lv_obj_get_width(splash_card);
-            int32_t x = -140 + (pass_frame * (card_w + 260)) / LV_MAX(1, pass_total);
-            lv_obj_set_x(splash_shine, x);
-            lv_obj_set_style_opa(splash_shine, LV_OPA_50, 0);
+    if (splash_scanline) {
+        if (splash_frame >= SPLASH_SCAN_START && splash_frame <= SPLASH_SCAN_END) {
+            int32_t pass_frame = splash_frame - SPLASH_SCAN_START;
+            int32_t pass_total = SPLASH_SCAN_END - SPLASH_SCAN_START;
+            lv_coord_t screen_h = lv_disp_get_ver_res(NULL);
+            lv_coord_t y = -8 + (pass_frame * (screen_h + 16)) / LV_MAX(1, pass_total);
+            lv_obj_align(splash_scanline, LV_ALIGN_TOP_MID, 0, y);
+            lv_obj_set_style_opa(splash_scanline, LV_OPA_70, 0);
         } else {
-            lv_obj_set_style_opa(splash_shine, LV_OPA_0, 0);
+            lv_obj_set_style_opa(splash_scanline, LV_OPA_0, 0);
         }
     }
 
-    // Fade-out near the end
+    if (splash_label) {
+        int32_t title_opa = 0;
+        if (splash_frame >= SPLASH_TITLE_IN_START) {
+            if (splash_frame >= SPLASH_STABLE_START) {
+                title_opa = 255;
+            } else {
+                title_opa = ((splash_frame - SPLASH_TITLE_IN_START) * 255) /
+                            (SPLASH_STABLE_START - SPLASH_TITLE_IN_START);
+            }
+        }
+
+        lv_color_t title_color = lv_color_hex(0x89F5FF);
+        lv_coord_t title_x = 0;
+        if (splash_frame <= SPLASH_TITLE_GLITCH_END) {
+            switch (splash_frame % 4) {
+                case 0: title_color = lv_color_hex(0x89F5FF); break;
+                case 1: title_color = lv_color_hex(0xFFC46A); break;
+                case 2: title_color = lv_color_hex(0xD8ECFF); break;
+                default: title_color = lv_color_hex(0x6CD5FF); break;
+            }
+            if ((splash_frame % 5) == 0) {
+                title_x = 2;
+            } else if ((splash_frame % 3) == 0) {
+                title_x = -2;
+            }
+        }
+
+        lv_obj_set_style_text_opa(splash_label, (lv_opa_t)LV_CLAMP(0, title_opa, 255), 0);
+        lv_obj_set_style_text_color(splash_label, title_color, 0);
+        lv_obj_align(splash_label, LV_ALIGN_CENTER, title_x, -18);
+    }
+
+    if (splash_subtitle) {
+        int32_t sub_opa = 0;
+        if (splash_frame >= SPLASH_SUB_IN_START) {
+            if (splash_frame >= SPLASH_STABLE_START) {
+                sub_opa = 230;
+            } else {
+                sub_opa = ((splash_frame - SPLASH_SUB_IN_START) * 230) /
+                          (SPLASH_STABLE_START - SPLASH_SUB_IN_START);
+            }
+        }
+        lv_obj_set_style_text_opa(splash_subtitle, (lv_opa_t)LV_CLAMP(0, sub_opa, 230), 0);
+        lv_obj_align(splash_subtitle, LV_ALIGN_CENTER, 0, 34);
+    }
+
+    if (splash_status) {
+        const char *status_text = "[BOOTLINK ESTABLISHED]";
+        lv_color_t status_color = lv_color_hex(0x62B2FF);
+        if (splash_frame >= 18 && splash_frame < 30) {
+            status_text = "[SYNCING TELEMETRY BUS]";
+            status_color = lv_color_hex(0x7CC6FF);
+        } else if (splash_frame >= 30 && splash_frame < 44) {
+            status_text = "[LOCKING CONTROL SURFACE]";
+            status_color = lv_color_hex(0x76F2C7);
+        } else if (splash_frame >= 44) {
+            status_text = "[READY]";
+            status_color = lv_color_hex(0x9EF8FF);
+        }
+        lv_label_set_text(splash_status, status_text);
+        lv_obj_set_style_text_color(splash_status, status_color, 0);
+
+        int32_t status_opa = 0;
+        if (splash_frame >= SPLASH_STATUS_IN_START) {
+            status_opa = ((splash_frame - SPLASH_STATUS_IN_START) * 230) /
+                         (SPLASH_STABLE_START - SPLASH_STATUS_IN_START);
+        }
+        lv_obj_set_style_text_opa(splash_status, (lv_opa_t)LV_CLAMP(0, status_opa, 230), 0);
+    }
+
     if (splash_screen) {
         int32_t screen_opa = 255;
         if (splash_frame >= SPLASH_FADE_OUT_START) {
@@ -2901,110 +2919,161 @@ static void play_startup_beep(void)
     vTaskDelete(NULL);
 }
 
-// Show splash screen with iOS Dark Glass animation
+// Show splash screen with cyber tech animation
 static void show_splash_screen(void)
 {
     ESP_LOGI(TAG, "Showing splash screen...");
 
     splash_frame = 0;
 
-    // Create full-screen dark gradient background
+    // Create full-screen cyber background
     splash_screen = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(splash_screen);
     lv_obj_set_size(splash_screen, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(splash_screen, lv_color_hex(0x04070F), 0);
-    lv_obj_set_style_bg_grad_color(splash_screen, lv_color_hex(0x121E3A), 0);
+    lv_obj_set_style_bg_color(splash_screen, lv_color_hex(0x02060F), 0);
+    lv_obj_set_style_bg_grad_color(splash_screen, lv_color_hex(0x0C1A34), 0);
     lv_obj_set_style_bg_grad_dir(splash_screen, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_main_stop(splash_screen, 0, 0);
+    lv_obj_set_style_bg_main_stop(splash_screen, 20, 0);
     lv_obj_set_style_bg_grad_stop(splash_screen, 255, 0);
     lv_obj_set_style_bg_opa(splash_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(splash_screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Soft color orbs to emulate glass depth and smooth out gradient transitions
-    splash_orb_top = lv_obj_create(splash_screen);
-    lv_obj_remove_style_all(splash_orb_top);
-    lv_obj_set_size(splash_orb_top, 320, 320);
-    lv_obj_set_style_radius(splash_orb_top, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(splash_orb_top, lv_color_hex(0x2A9DFF), 0);
-    lv_obj_set_style_bg_grad_color(splash_orb_top, lv_color_hex(0x57E0FF), 0);
-    lv_obj_set_style_bg_grad_dir(splash_orb_top, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_opa(splash_orb_top, LV_OPA_30, 0);
-    lv_obj_align(splash_orb_top, LV_ALIGN_TOP_LEFT, -120, -120);
+    // Grid overlay for cyber HUD feel
+    splash_grid_overlay = lv_obj_create(splash_screen);
+    lv_obj_remove_style_all(splash_grid_overlay);
+    lv_obj_set_size(splash_grid_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_opa(splash_grid_overlay, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_opa(splash_grid_overlay, LV_OPA_0, 0);
+    lv_obj_clear_flag(splash_grid_overlay, LV_OBJ_FLAG_SCROLLABLE);
 
-    splash_orb_bottom = lv_obj_create(splash_screen);
-    lv_obj_remove_style_all(splash_orb_bottom);
-    lv_obj_set_size(splash_orb_bottom, 360, 360);
-    lv_obj_set_style_radius(splash_orb_bottom, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(splash_orb_bottom, lv_color_hex(0x2F66FF), 0);
-    lv_obj_set_style_bg_grad_color(splash_orb_bottom, lv_color_hex(0x88B4FF), 0);
-    lv_obj_set_style_bg_grad_dir(splash_orb_bottom, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_opa(splash_orb_bottom, 24, 0);
-    lv_obj_align(splash_orb_bottom, LV_ALIGN_BOTTOM_RIGHT, 140, 180);
+    lv_coord_t grid_w = lv_disp_get_hor_res(NULL);
+    lv_coord_t grid_h = lv_disp_get_ver_res(NULL);
+    for (lv_coord_t y = 18; y < grid_h; y += 48) {
+        lv_obj_t *line = lv_obj_create(splash_grid_overlay);
+        lv_obj_remove_style_all(line);
+        lv_obj_set_size(line, grid_w, 1);
+        lv_obj_set_pos(line, 0, y);
+        lv_obj_set_style_bg_color(line, lv_color_hex(0x24406A), 0);
+        lv_obj_set_style_bg_opa(line, LV_OPA_40, 0);
+    }
+    for (lv_coord_t x = 10; x < grid_w; x += 68) {
+        lv_obj_t *line = lv_obj_create(splash_grid_overlay);
+        lv_obj_remove_style_all(line);
+        lv_obj_set_size(line, 1, grid_h);
+        lv_obj_set_pos(line, x, 0);
+        lv_obj_set_style_bg_color(line, lv_color_hex(0x1D3458), 0);
+        lv_obj_set_style_bg_opa(line, LV_OPA_30, 0);
+    }
 
-    // Main glass card
-    splash_card = lv_obj_create(splash_screen);
-    lv_obj_set_size(splash_card, lv_pct(78), 292);
-    lv_obj_align(splash_card, LV_ALIGN_CENTER, 0, -12);
-    lv_obj_set_style_radius(splash_card, 32, 0);
-    lv_obj_set_style_clip_corner(splash_card, true, 0);
-    lv_obj_set_style_bg_color(splash_card, lv_color_hex(0x132547), 0);
-    lv_obj_set_style_bg_grad_color(splash_card, lv_color_hex(0x0D1730), 0);
-    lv_obj_set_style_bg_grad_dir(splash_card, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_main_stop(splash_card, 0, 0);
-    lv_obj_set_style_bg_grad_stop(splash_card, 255, 0);
-    lv_obj_set_style_bg_opa(splash_card, LV_OPA_70, 0);
-    lv_obj_set_style_border_width(splash_card, 1, 0);
-    lv_obj_set_style_border_color(splash_card, lv_color_hex(0x9BD8FF), 0);
-    lv_obj_set_style_border_opa(splash_card, LV_OPA_40, 0);
-    lv_obj_set_style_shadow_width(splash_card, 24, 0);
-    lv_obj_set_style_shadow_spread(splash_card, 2, 0);
-    lv_obj_set_style_shadow_color(splash_card, lv_color_hex(0x2C78FF), 0);
-    lv_obj_set_style_shadow_opa(splash_card, LV_OPA_30, 0);
-    lv_obj_set_style_pad_all(splash_card, 0, 0);
-    lv_obj_clear_flag(splash_card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_opa(splash_card, LV_OPA_0, 0);
+    splash_frame_box = lv_obj_create(splash_screen);
+    lv_obj_remove_style_all(splash_frame_box);
+    lv_obj_set_size(splash_frame_box, lv_pct(78), 300);
+    lv_obj_align(splash_frame_box, LV_ALIGN_CENTER, 0, -18);
+    lv_obj_set_style_bg_opa(splash_frame_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(splash_frame_box, 2, 0);
+    lv_obj_set_style_border_color(splash_frame_box, lv_color_hex(0x66E8FF), 0);
+    lv_obj_set_style_border_opa(splash_frame_box, LV_OPA_50, 0);
+    lv_obj_set_style_radius(splash_frame_box, 10, 0);
+    lv_obj_set_style_shadow_width(splash_frame_box, 22, 0);
+    lv_obj_set_style_shadow_color(splash_frame_box, lv_color_hex(0x1FA0FF), 0);
+    lv_obj_set_style_shadow_opa(splash_frame_box, LV_OPA_20, 0);
 
-    // Glass highlight strip (animated "sheen")
-    splash_shine = lv_obj_create(splash_card);
-    lv_obj_remove_style_all(splash_shine);
-    lv_obj_set_size(splash_shine, 130, 318);
-    lv_obj_set_pos(splash_shine, -150, -12);
-    lv_obj_set_style_radius(splash_shine, 28, 0);
-    lv_obj_set_style_bg_color(splash_shine, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_grad_color(splash_shine, lv_color_hex(0xB9E6FF), 0);
-    lv_obj_set_style_bg_grad_dir(splash_shine, LV_GRAD_DIR_HOR, 0);
-    lv_obj_set_style_bg_opa(splash_shine, LV_OPA_30, 0);
-    lv_obj_set_style_opa(splash_shine, LV_OPA_0, 0);
+    // Corner markers
+    lv_obj_t *corner = lv_obj_create(splash_frame_box);
+    lv_obj_remove_style_all(corner);
+    lv_obj_set_size(corner, 42, 4);
+    lv_obj_align(corner, LV_ALIGN_TOP_LEFT, 8, 8);
+    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
+    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
+    corner = lv_obj_create(splash_frame_box);
+    lv_obj_remove_style_all(corner);
+    lv_obj_set_size(corner, 4, 34);
+    lv_obj_align(corner, LV_ALIGN_TOP_LEFT, 8, 8);
+    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
+    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
 
-    // Thin top edge to strengthen glass look
-    lv_obj_t *edge_line = lv_obj_create(splash_card);
-    lv_obj_remove_style_all(edge_line);
-    lv_obj_set_size(edge_line, lv_pct(86), 3);
-    lv_obj_align(edge_line, LV_ALIGN_TOP_MID, 0, 14);
-    lv_obj_set_style_radius(edge_line, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(edge_line, lv_color_hex(0xD8F0FF), 0);
-    lv_obj_set_style_bg_grad_color(edge_line, lv_color_hex(0x70D8FF), 0);
-    lv_obj_set_style_bg_grad_dir(edge_line, LV_GRAD_DIR_HOR, 0);
-    lv_obj_set_style_bg_opa(edge_line, LV_OPA_70, 0);
+    corner = lv_obj_create(splash_frame_box);
+    lv_obj_remove_style_all(corner);
+    lv_obj_set_size(corner, 42, 4);
+    lv_obj_align(corner, LV_ALIGN_TOP_RIGHT, -8, 8);
+    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
+    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
+    corner = lv_obj_create(splash_frame_box);
+    lv_obj_remove_style_all(corner);
+    lv_obj_set_size(corner, 4, 34);
+    lv_obj_align(corner, LV_ALIGN_TOP_RIGHT, -8, 8);
+    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
+    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
+
+    corner = lv_obj_create(splash_frame_box);
+    lv_obj_remove_style_all(corner);
+    lv_obj_set_size(corner, 42, 4);
+    lv_obj_align(corner, LV_ALIGN_BOTTOM_LEFT, 8, -8);
+    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
+    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
+    corner = lv_obj_create(splash_frame_box);
+    lv_obj_remove_style_all(corner);
+    lv_obj_set_size(corner, 4, 34);
+    lv_obj_align(corner, LV_ALIGN_BOTTOM_LEFT, 8, -8);
+    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
+    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
+
+    corner = lv_obj_create(splash_frame_box);
+    lv_obj_remove_style_all(corner);
+    lv_obj_set_size(corner, 42, 4);
+    lv_obj_align(corner, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
+    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
+    corner = lv_obj_create(splash_frame_box);
+    lv_obj_remove_style_all(corner);
+    lv_obj_set_size(corner, 4, 34);
+    lv_obj_align(corner, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
+    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
+
+    splash_scanline = lv_obj_create(splash_screen);
+    lv_obj_remove_style_all(splash_scanline);
+    lv_obj_set_size(splash_scanline, lv_pct(100), 5);
+    lv_obj_set_style_bg_color(splash_scanline, lv_color_hex(0x7CEFFF), 0);
+    lv_obj_set_style_bg_opa(splash_scanline, LV_OPA_70, 0);
+    lv_obj_set_style_shadow_width(splash_scanline, 16, 0);
+    lv_obj_set_style_shadow_color(splash_scanline, lv_color_hex(0x4AC7FF), 0);
+    lv_obj_set_style_shadow_opa(splash_scanline, LV_OPA_40, 0);
+    lv_obj_set_style_opa(splash_scanline, LV_OPA_0, 0);
+    lv_obj_align(splash_scanline, LV_ALIGN_TOP_MID, 0, -10);
+
+    lv_obj_t *tagline = lv_label_create(splash_screen);
+    lv_label_set_text(tagline, "CYBER CONTROL INTERFACE");
+    lv_obj_set_style_text_font(tagline, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(tagline, lv_color_hex(0x5FA7E8), 0);
+    lv_obj_align(tagline, LV_ALIGN_TOP_LEFT, 26, 18);
 
     // Main brand
-    splash_label = lv_label_create(splash_card);
+    splash_label = lv_label_create(splash_frame_box);
     lv_label_set_text(splash_label, "LAB5");
     lv_obj_set_style_text_font(splash_label, &lv_font_montserrat_44, 0);
-    lv_obj_set_style_text_color(splash_label, lv_color_hex(0xEFF7FF), 0);
-    lv_obj_set_style_text_letter_space(splash_label, 4, 0);
+    lv_obj_set_style_text_color(splash_label, lv_color_hex(0x89F5FF), 0);
+    lv_obj_set_style_text_letter_space(splash_label, 6, 0);
     lv_obj_set_style_text_opa(splash_label, LV_OPA_0, 0);
-    lv_obj_align(splash_label, LV_ALIGN_CENTER, 0, -6);
+    lv_obj_align(splash_label, LV_ALIGN_CENTER, 0, -18);
 
     // Small subtitle requested by user
-    splash_subtitle = lv_label_create(splash_card);
+    splash_subtitle = lv_label_create(splash_frame_box);
     lv_label_set_text(splash_subtitle, "JanOS x Tab5");
     lv_obj_set_style_text_font(splash_subtitle, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(splash_subtitle, lv_color_hex(0xA9C8E7), 0);
+    lv_obj_set_style_text_color(splash_subtitle, lv_color_hex(0xC6D9EF), 0);
     lv_obj_set_style_text_opa(splash_subtitle, LV_OPA_0, 0);
-    lv_obj_align(splash_subtitle, LV_ALIGN_CENTER, 0, 46);
+    lv_obj_align(splash_subtitle, LV_ALIGN_CENTER, 0, 34);
 
-    // Start cinematic animation timer (40ms = 25 FPS)
+    splash_status = lv_label_create(splash_frame_box);
+    lv_label_set_text(splash_status, "[BOOTLINK ESTABLISHED]");
+    lv_obj_set_style_text_font(splash_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(splash_status, lv_color_hex(0x62B2FF), 0);
+    lv_obj_set_style_text_letter_space(splash_status, 1, 0);
+    lv_obj_set_style_text_opa(splash_status, LV_OPA_0, 0);
+    lv_obj_align(splash_status, LV_ALIGN_CENTER, 0, 88);
+
+    // Start cyber intro animation timer (40ms = 25 FPS)
     splash_timer = lv_timer_create(splash_timer_cb, SPLASH_TICK_MS, NULL);
     
     // Play startup beep in background task to not block UI
@@ -3376,6 +3445,7 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
     lv_obj_t *panel = lv_obj_create(parent);
     lv_obj_remove_style_all(panel);
     lv_obj_set_width(panel, lv_pct(100));
+    lv_obj_set_style_min_height(panel, 118, 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(panel, 0, 0);
     lv_obj_set_style_pad_left(panel, 6, 0);
@@ -3531,7 +3601,28 @@ static lv_obj_t *screenshot_title_label = NULL;
 static void save_screenshot_to_sd(void)
 {
     ESP_LOGI(TAG, "Taking screenshot...");
-    
+
+    // Internal SD can be inserted after boot: retry mount on-demand.
+    bool sd_mounted = check_sd_card_for_tab(TAB_INTERNAL);
+    if (!sd_mounted) {
+        ESP_LOGW(TAG, "Internal SD not mounted, attempting remount...");
+        esp_err_t remount_ret = bsp_sdcard_init(CONFIG_BSP_SD_MOUNT_POINT, 5);
+        if (remount_ret != ESP_OK) {
+            ESP_LOGE(TAG, "SD remount failed: %s", esp_err_to_name(remount_ret));
+            return;
+        }
+        sd_mounted = check_sd_card_for_tab(TAB_INTERNAL);
+    }
+
+    internal_sd_present = sd_mounted;
+    internal_ctx.sd_card_present = sd_mounted;
+    create_tab_bar();  // Refresh warning icon state in tab bar
+
+    if (!sd_mounted) {
+        ESP_LOGE(TAG, "SD card still not mounted, screenshot aborted");
+        return;
+    }
+
     // Ensure screenshots directory exists
     struct stat st;
     if (stat(SCREENSHOT_DIR, &st) != 0) {
@@ -7310,7 +7401,6 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
     int tile_columns = (lv_disp_get_hor_res(NULL) >= 700) ? 3 : 2;
     lv_coord_t tile_width = uniform_tile_width_for_columns(tile_columns, 24);
     lv_coord_t tile_height = (tile_columns == 3) ? 170 : 184;
-    const lv_coord_t tile_gap = 12;
     
     // Create 7 tiles for device tabs (same for Grove, USB, MBus)
     // Use "Test" instead of "Attack" when Red Team is disabled
@@ -7333,14 +7423,17 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
     tile = create_tile(tiles_grid, LV_SYMBOL_WIFI, "Karma", COLOR_MATERIAL_ORANGE, main_tile_event_cb, "Karma");
     lv_obj_set_size(tile, tile_width, tile_height);
 
-    lv_obj_t *dashboard_panel = create_live_dashboard_panel(tiles_grid, ctx);
+    // Flexible spacer keeps dashboard anchored to the bottom without compressing it.
+    lv_obj_t *dashboard_spacer = lv_obj_create(*tiles_ptr);
+    lv_obj_remove_style_all(dashboard_spacer);
+    lv_obj_set_size(dashboard_spacer, lv_pct(100), 1);
+    lv_obj_set_flex_grow(dashboard_spacer, 1);
+    lv_obj_clear_flag(dashboard_spacer, LV_OBJ_FLAG_CLICKABLE);
+
+    // Keep dashboard detached from wrapped tile grid so it always anchors at the bottom area
+    lv_obj_t *dashboard_panel = create_live_dashboard_panel(*tiles_ptr, ctx);
     if (dashboard_panel) {
-        if (tile_columns >= 3) {
-            lv_obj_set_size(dashboard_panel, (tile_width * 2) + tile_gap, tile_height);
-            lv_obj_set_flex_align(dashboard_panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        } else {
-            lv_obj_set_width(dashboard_panel, lv_pct(100));
-        }
+        lv_obj_set_width(dashboard_panel, lv_pct(100));
     }
 
     update_live_dashboard_for_ctx(ctx);
@@ -7403,8 +7496,6 @@ static void internal_tile_event_cb(lv_event_t *e)
     } else if (strcmp(tile_name, "Ad Hoc Portal") == 0) {
         // Show Ad Hoc Portal page (with portal status or probe selection)
         show_adhoc_portal_page();
-    } else if (strcmp(tile_name, "Theme") == 0) {
-        show_theme_page();
     }
 }
 
@@ -7416,6 +7507,13 @@ static void show_internal_tiles(void)
     if (!internal_container) {
         ESP_LOGE(TAG, "INTERNAL container not initialized!");
         return;
+    }
+
+    bool sd_now_present = check_sd_card_for_tab(TAB_INTERNAL);
+    if (sd_now_present != internal_sd_present) {
+        internal_sd_present = sd_now_present;
+        internal_ctx.sd_card_present = sd_now_present;
+        create_tab_bar();  // Refresh warning icon if SD state changed after boot
     }
     
     // Hide settings page if visible, show tiles
@@ -7454,10 +7552,17 @@ static void show_internal_tiles(void)
     lv_obj_set_size(settings_tile, tile_width, tile_height);
     lv_obj_t *portal_tile = create_tile(tiles_grid, LV_SYMBOL_WIFI, "Ad Hoc\nPortal & Karma", COLOR_MATERIAL_ORANGE, internal_tile_event_cb, "Ad Hoc Portal");
     lv_obj_set_size(portal_tile, tile_width, tile_height);
-    lv_obj_t *theme_tile = create_tile(tiles_grid, LV_SYMBOL_IMAGE, "Theme", COLOR_MATERIAL_CYAN, internal_tile_event_cb, "Theme");
-    lv_obj_set_size(theme_tile, tile_width, tile_height);
 
-    create_live_dashboard_panel(internal_tiles, &internal_ctx);
+    lv_obj_t *dashboard_spacer = lv_obj_create(internal_tiles);
+    lv_obj_remove_style_all(dashboard_spacer);
+    lv_obj_set_size(dashboard_spacer, lv_pct(100), 1);
+    lv_obj_set_flex_grow(dashboard_spacer, 1);
+    lv_obj_clear_flag(dashboard_spacer, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *dashboard_panel = create_live_dashboard_panel(internal_tiles, &internal_ctx);
+    if (dashboard_panel) {
+        lv_obj_set_width(dashboard_panel, lv_pct(100));
+    }
     update_live_dashboard_for_ctx(&internal_ctx);
     
     // Ensure tiles are visible after creation (fixes initial display issue)
@@ -18328,7 +18433,9 @@ static void theme_back_btn_event_cb(lv_event_t *e)
     if (internal_theme_page) {
         lv_obj_add_flag(internal_theme_page, LV_OBJ_FLAG_HIDDEN);
     }
-    if (internal_tiles) {
+    if (internal_settings_page) {
+        lv_obj_clear_flag(internal_settings_page, LV_OBJ_FLAG_HIDDEN);
+    } else if (internal_tiles) {
         lv_obj_clear_flag(internal_tiles, LV_OBJ_FLAG_HIDDEN);
         update_live_dashboard_for_ctx(&internal_ctx);
     }
@@ -18445,10 +18552,12 @@ static void settings_tile_event_cb(lv_event_t *e)
         show_screen_timeout_popup();
     } else if (strcmp(tile_name, "Screen Brightness") == 0) {
         show_screen_brightness_popup();
+    } else if (strcmp(tile_name, "Theme") == 0) {
+        show_theme_page();
     }
 }
 
-// Show Settings page with UART Pins and Scan Time tiles (inside INTERNAL container)
+// Show Settings page (inside INTERNAL container)
 static void show_settings_page(void)
 {
     if (!internal_container) {
@@ -18517,6 +18626,8 @@ static void show_settings_page(void)
     tile = create_tile(tiles, LV_SYMBOL_EYE_CLOSE, "Screen\nTimeout", COLOR_MATERIAL_AMBER, settings_tile_event_cb, "Screen Timeout");
     lv_obj_set_size(tile, tile_width, 182);
     tile = create_tile(tiles, LV_SYMBOL_IMAGE, "Screen\nBrightness", COLOR_MATERIAL_CYAN, settings_tile_event_cb, "Screen Brightness");
+    lv_obj_set_size(tile, tile_width, 182);
+    tile = create_tile(tiles, LV_SYMBOL_IMAGE, "Theme", COLOR_MATERIAL_PURPLE, settings_tile_event_cb, "Theme");
     lv_obj_set_size(tile, tile_width, 182);
 }
 
