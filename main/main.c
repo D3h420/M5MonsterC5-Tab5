@@ -22,6 +22,8 @@
 #include "driver/ledc.h"
 #include "bsp/m5stack_tab5.h"
 #include "lvgl.h"
+#include "ui_theme.h"
+#include "ui_components.h"
 #include "iot_usbh_cdc.h"
 #include "usb/usb_host.h"
 #include "usb/usb_helpers.h"
@@ -91,17 +93,17 @@ static const char *TAG = "wifi_scanner";
 #define OBSERVER_POLL_INTERVAL_MS  20000  // 20 seconds
 #define OBSERVER_LINE_BUFFER_SIZE  512
 
-// Material Design Colors
-#define COLOR_MATERIAL_BG       lv_color_make(18, 18, 18)      // #121212 - dark background
-#define COLOR_MATERIAL_BLUE     lv_color_make(33, 150, 243)    // #2196F3
-#define COLOR_MATERIAL_RED      lv_color_make(244, 67, 54)     // #F44336
-#define COLOR_MATERIAL_PURPLE   lv_color_make(156, 39, 176)    // #9C27B0
-#define COLOR_MATERIAL_GREEN    lv_color_make(76, 175, 80)     // #4CAF50
-#define COLOR_MATERIAL_AMBER    lv_color_make(255, 193, 7)     // #FFC107
-#define COLOR_MATERIAL_CYAN     lv_color_make(0, 188, 212)     // #00BCD4
-#define COLOR_MATERIAL_TEAL     lv_color_make(0, 150, 136)     // #009688 - Kismet-style teal
-#define COLOR_MATERIAL_ORANGE   lv_color_make(255, 152, 0)     // #FF9800
-#define COLOR_MATERIAL_PINK     lv_color_make(233, 30, 99)     // #E91E63
+// Design-system color aliases (mapped to centralized theme tokens)
+#define COLOR_MATERIAL_BG       ui_theme_color(UI_COLOR_BG)
+#define COLOR_MATERIAL_BLUE     ui_theme_color(UI_COLOR_INFO)
+#define COLOR_MATERIAL_RED      ui_theme_color(UI_COLOR_ERROR)
+#define COLOR_MATERIAL_PURPLE   lv_color_hex(0xA67CFF)
+#define COLOR_MATERIAL_GREEN    ui_theme_color(UI_COLOR_SUCCESS)
+#define COLOR_MATERIAL_AMBER    ui_theme_color(UI_COLOR_WARNING)
+#define COLOR_MATERIAL_CYAN     ui_theme_color(UI_COLOR_ACCENT_PRIMARY)
+#define COLOR_MATERIAL_TEAL     ui_theme_color(UI_COLOR_ACCENT_PRIMARY)
+#define COLOR_MATERIAL_ORANGE   ui_theme_color(UI_COLOR_ACCENT_SECONDARY)
+#define COLOR_MATERIAL_PINK     lv_color_hex(0xFF74B5)
 
 // Tab bar colors
 #define TAB_COLOR_UART1_ACTIVE    0x00BCD4  // Cyan
@@ -110,8 +112,9 @@ static const char *TAG = "wifi_scanner";
 #define TAB_COLOR_MBUS_INACTIVE  0x804D00  // Dark Orange
 #define TAB_COLOR_INTERNAL_ACTIVE 0x9C27B0  // Purple
 #define TAB_COLOR_INTERNAL_INACTIVE 0x4A148C  // Dark Purple
+#define UI_CHROME_HEIGHT 108
 
-// Screenshot feature - set to false to disable screenshot on LABORATORIUM tap
+// Screenshot feature - set to false to disable screenshot on title tap
 #define SCREENSHOT_ENABLED true
 #define SCREENSHOT_DIR "/sdcard/screenshots"
 
@@ -1437,10 +1440,10 @@ static void battery_status_timer_cb(lv_timer_t *timer)
         if (current_charging_status) {
             // Just icon, no text - saves space
             lv_label_set_text(charging_status_label, LV_SYMBOL_CHARGE);
-            lv_obj_set_style_text_color(charging_status_label, lv_color_make(76, 175, 80), 0);  // Green
+            lv_obj_set_style_text_color(charging_status_label, ui_theme_color(UI_COLOR_SUCCESS), 0);
         } else {
             lv_label_set_text(charging_status_label, LV_SYMBOL_BATTERY_FULL);
-            lv_obj_set_style_text_color(charging_status_label, lv_color_make(255, 255, 255), 0);  // White
+            lv_obj_set_style_text_color(charging_status_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
         }
     }
 }
@@ -2437,40 +2440,38 @@ static void wifi_scan_task(void *arg)
             
             // Create list item with horizontal layout (checkbox + text container)
             lv_obj_t *item = lv_obj_create(network_list);
-            lv_obj_set_size(item, lv_pct(100), LV_SIZE_CONTENT);
-            lv_obj_set_style_pad_all(item, 8, 0);
-            lv_obj_set_style_bg_color(item, lv_color_hex(0x2D2D2D), 0);
-            lv_obj_set_style_border_width(item, 0, 0);
-            lv_obj_set_style_radius(item, 8, 0);
+            lv_obj_set_size(item, lv_pct(100), 76);
+            ui_theme_apply_list_row(item);
+            lv_obj_set_style_bg_color(item, ui_theme_color(UI_COLOR_CARD), 0);
             lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(item, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-            lv_obj_set_style_pad_column(item, 12, 0);
+            lv_obj_set_style_pad_column(item, 10, 0);
             lv_obj_clear_flag(item, LV_OBJ_FLAG_CLICKABLE);  // Don't steal clicks from checkbox
             
             // Checkbox (on the left) - explicit size for better touch accuracy
             lv_obj_t *cb = lv_checkbox_create(item);
             lv_checkbox_set_text(cb, "");  // Empty text - we use separate labels
-            lv_obj_set_size(cb, 50, 50);  // Explicit size for touch target
+            lv_obj_set_size(cb, 56, 56);  // Explicit size for touch target
             lv_obj_set_ext_click_area(cb, 15);  // Extend touch area by 15px
             lv_obj_set_style_pad_all(cb, 4, 0);
             lv_obj_set_style_align(cb, LV_ALIGN_LEFT_MID, 0);  // Center vertically in row
             // Style the indicator - dark when unchecked, green when checked
-            lv_obj_set_style_bg_color(cb, lv_color_hex(0x3D3D3D), LV_PART_INDICATOR);
-            lv_obj_set_style_bg_color(cb, lv_color_hex(0x4CAF50), LV_PART_INDICATOR | LV_STATE_CHECKED);
-            lv_obj_set_style_border_color(cb, lv_color_hex(0x888888), LV_PART_INDICATOR);
+            lv_obj_set_style_bg_color(cb, ui_theme_color(UI_COLOR_SURFACE), LV_PART_INDICATOR);
+            lv_obj_set_style_bg_color(cb, ui_theme_color(UI_COLOR_SUCCESS), LV_PART_INDICATOR | LV_STATE_CHECKED);
+            lv_obj_set_style_border_color(cb, ui_theme_color(UI_COLOR_BORDER), LV_PART_INDICATOR);
             lv_obj_set_style_border_width(cb, 2, LV_PART_INDICATOR);
-            lv_obj_set_style_radius(cb, 4, LV_PART_INDICATOR);
+            lv_obj_set_style_radius(cb, 6, LV_PART_INDICATOR);
             // Pass 0-based index as user data
             lv_obj_add_event_cb(cb, network_checkbox_event_cb, LV_EVENT_VALUE_CHANGED, (void*)(intptr_t)i);
             
             // Text container (vertical layout for SSID and info)
             lv_obj_t *text_cont = lv_obj_create(item);
-            lv_obj_set_size(text_cont, lv_pct(85), LV_SIZE_CONTENT);
+            lv_obj_set_size(text_cont, lv_pct(80), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_opa(text_cont, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(text_cont, 0, 0);
             lv_obj_set_style_pad_all(text_cont, 0, 0);
             lv_obj_set_flex_flow(text_cont, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_style_pad_row(text_cont, 4, 0);
+            lv_obj_set_style_pad_row(text_cont, 3, 0);
             lv_obj_clear_flag(text_cont, LV_OBJ_FLAG_CLICKABLE);  // Don't steal clicks
             
             // SSID (or "Hidden" if empty)
@@ -2480,15 +2481,15 @@ static void wifi_scan_task(void *arg)
             } else {
                 lv_label_set_text(ssid_label, "(Hidden)");
             }
-            lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_18, 0);
-            lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_color(ssid_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
             
             // BSSID, Band, Security and RSSI
             lv_obj_t *info_label = lv_label_create(text_cont);
             lv_label_set_text_fmt(info_label, "%s  |  %s  |  %s  |  %d dBm", 
                                   net->bssid, net->band, net->security, net->rssi);
-            lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
-            lv_obj_set_style_text_color(info_label, lv_color_hex(0x888888), 0);
+            lv_obj_set_style_text_font(info_label, &lv_font_montserrat_13, 0);
+            lv_obj_set_style_text_color(info_label, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
         }
     }
     
@@ -2526,26 +2527,24 @@ static void wifi_scan_task(void *arg)
 // Show centered scanning overlay with large spinner
 static void show_scan_overlay(void) {
     if (scan_overlay) return;
-    
-    scan_overlay = lv_obj_create(lv_scr_act());
-    lv_obj_remove_style_all(scan_overlay);
-    lv_obj_set_size(scan_overlay, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(scan_overlay, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(scan_overlay, LV_OPA_70, 0);
-    lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_CLICKABLE);  // Block clicks on elements below
-    
+
+    lv_obj_t *dialog = NULL;
+    ui_comp_create_modal(lv_scr_act(), 360, 210, &scan_overlay, &dialog);
+
     // Large centered spinner
-    lv_obj_t *spin = lv_spinner_create(scan_overlay);
-    lv_obj_set_size(spin, 100, 100);
+    lv_obj_t *spin = lv_spinner_create(dialog);
+    lv_obj_set_size(spin, 88, 88);
     lv_spinner_set_anim_params(spin, 1000, 200);
-    lv_obj_center(spin);
-    
+    lv_obj_set_style_arc_color(spin, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(spin, ui_theme_color(UI_COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_align(spin, LV_ALIGN_CENTER, 0, -22);
+
     // "Scanning..." label below spinner
-    lv_obj_t *label = lv_label_create(scan_overlay);
+    lv_obj_t *label = lv_label_create(dialog);
     lv_label_set_text(label, "Scanning...");
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 60);
 }
 
 // Hide scanning overlay
@@ -2559,26 +2558,24 @@ static void hide_scan_overlay(void) {
 // Show Evil Twin loading overlay with spinner
 static void show_evil_twin_loading_overlay(void) {
     if (evil_twin_loading_overlay) return;
-    
-    evil_twin_loading_overlay = lv_obj_create(lv_scr_act());
-    lv_obj_remove_style_all(evil_twin_loading_overlay);
-    lv_obj_set_size(evil_twin_loading_overlay, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(evil_twin_loading_overlay, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(evil_twin_loading_overlay, LV_OPA_70, 0);
-    lv_obj_add_flag(evil_twin_loading_overlay, LV_OBJ_FLAG_CLICKABLE);  // Block clicks
-    
+
+    lv_obj_t *dialog = NULL;
+    ui_comp_create_modal(lv_scr_act(), 400, 220, &evil_twin_loading_overlay, &dialog);
+
     // Large centered spinner
-    lv_obj_t *spin = lv_spinner_create(evil_twin_loading_overlay);
-    lv_obj_set_size(spin, 100, 100);
+    lv_obj_t *spin = lv_spinner_create(dialog);
+    lv_obj_set_size(spin, 88, 88);
     lv_spinner_set_anim_params(spin, 1000, 200);
-    lv_obj_center(spin);
-    
+    lv_obj_set_style_arc_color(spin, ui_theme_color(UI_COLOR_ACCENT_SECONDARY), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(spin, ui_theme_color(UI_COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_align(spin, LV_ALIGN_CENTER, 0, -24);
+
     // "Loading..." label below spinner
-    lv_obj_t *label = lv_label_create(evil_twin_loading_overlay);
+    lv_obj_t *label = lv_label_create(dialog);
     lv_label_set_text(label, "Loading portals...");
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 62);
 }
 
 // Hide Evil Twin loading overlay
@@ -2811,40 +2808,54 @@ static void scan_btn_click_cb(lv_event_t *e)
 static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *text, lv_color_t bg_color, lv_event_cb_t callback, const char *user_data)
 {
     lv_obj_t *tile = lv_btn_create(parent);
-    lv_obj_set_size(tile, 230, 140);  // Large tile size for 3 columns
-    lv_obj_set_style_bg_color(tile, bg_color, LV_STATE_DEFAULT);
-    // Pressed state: lighten the color
-    lv_obj_set_style_bg_color(tile, lv_color_lighten(bg_color, 50), LV_STATE_PRESSED);
-    lv_obj_set_style_border_width(tile, 0, 0);  // No border for Material look
-    lv_obj_set_style_radius(tile, 16, 0);  // Rounded corners
-    lv_obj_set_style_shadow_width(tile, 12, 0);  // Material shadow
-    lv_obj_set_style_shadow_color(tile, lv_color_make(0, 0, 0), 0);
-    lv_obj_set_style_shadow_opa(tile, LV_OPA_30, 0);
+    lv_obj_set_size(tile, 230, 152);
+    ui_theme_apply_metric_card(tile, bg_color);
+    lv_obj_set_style_bg_color(tile, lv_color_mix(bg_color, ui_theme_color(UI_COLOR_CARD), LV_OPA_20), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(tile, lv_color_mix(bg_color, ui_theme_color(UI_COLOR_CARD), LV_OPA_35), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(tile, bg_color, LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_color(tile, bg_color, LV_STATE_DEFAULT);
     lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_all(tile, 12, 0);
-    
+
+    lv_obj_t *top = lv_obj_create(tile);
+    lv_obj_remove_style_all(top);
+    lv_obj_set_size(top, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(top, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(top, LV_OBJ_FLAG_CLICKABLE);
+
     if (icon) {
-        lv_obj_t *icon_label = lv_label_create(tile);
+        lv_obj_t *icon_label = lv_label_create(top);
         lv_label_set_text(icon_label, icon);
-        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_44, 0);  // Large icon
-        lv_obj_set_style_text_color(icon_label, lv_color_make(255, 255, 255), 0);  // White icon
+        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_32, 0);
+        lv_obj_set_style_text_color(icon_label, bg_color, 0);
     }
-    
+
+    lv_obj_t *badge = lv_obj_create(top);
+    lv_obj_set_size(badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    ui_theme_apply_chip(badge, bg_color);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_25, 0);
+    lv_obj_t *badge_label = lv_label_create(badge);
+    lv_label_set_text(badge_label, "CTRL");
+    lv_obj_set_style_text_font(badge_label, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(badge_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+    lv_obj_center(badge_label);
+
     if (text) {
         lv_obj_t *text_label = lv_label_create(tile);
         lv_label_set_text(text_label, text);
-        lv_obj_set_style_text_font(text_label, &lv_font_montserrat_18, 0);  // Larger text
-        lv_obj_set_style_text_color(text_label, lv_color_make(255, 255, 255), 0);  // White text
-        lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(text_label, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(text_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_LEFT, 0);
         lv_label_set_long_mode(text_label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(text_label, 210);
+        lv_obj_set_width(text_label, 206);
     }
-    
-    if (callback && user_data) {
+
+    if (callback) {
         lv_obj_add_event_cb(tile, callback, LV_EVENT_CLICKED, (void*)user_data);
     }
-    
+
     return tile;
 }
 
@@ -2852,39 +2863,39 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
 static lv_obj_t *create_small_tile(lv_obj_t *parent, const char *icon, const char *text, lv_color_t bg_color, lv_event_cb_t callback, const char *user_data)
 {
     lv_obj_t *tile = lv_btn_create(parent);
-    lv_obj_set_size(tile, 108, 55);  // Wider tile for 4-tile layout
-    lv_obj_set_style_bg_color(tile, bg_color, LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(tile, lv_color_lighten(bg_color, 50), LV_STATE_PRESSED);
-    lv_obj_set_style_border_width(tile, 0, 0);
-    lv_obj_set_style_radius(tile, 8, 0);  // Smaller radius
-    lv_obj_set_style_shadow_width(tile, 4, 0);  // Smaller shadow
-    lv_obj_set_style_shadow_color(tile, lv_color_make(0, 0, 0), 0);
-    lv_obj_set_style_shadow_opa(tile, LV_OPA_30, 0);
-    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_size(tile, 122, 58);
+    ui_theme_apply_secondary_btn(tile);
+    lv_obj_set_style_bg_color(tile, lv_color_mix(bg_color, ui_theme_color(UI_COLOR_SURFACE), LV_OPA_35), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(tile, lv_color_mix(bg_color, ui_theme_color(UI_COLOR_SURFACE_ALT), LV_OPA_45), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(tile, bg_color, LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(tile, 2, LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(tile, 0, 0);
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(tile, 4, 0);
-    
+    lv_obj_set_style_pad_column(tile, 6, 0);
+    lv_obj_set_style_pad_all(tile, 6, 0);
+
     if (icon) {
         lv_obj_t *icon_label = lv_label_create(tile);
         lv_label_set_text(icon_label, icon);
-        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_14, 0);  // Smaller icon
-        lv_obj_set_style_text_color(icon_label, lv_color_make(255, 255, 255), 0);
+        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(icon_label, bg_color, 0);
     }
-    
+
     if (text) {
         lv_obj_t *text_label = lv_label_create(tile);
         lv_label_set_text(text_label, text);
-        lv_obj_set_style_text_font(text_label, &lv_font_montserrat_12, 0);  // Smaller text
-        lv_obj_set_style_text_color(text_label, lv_color_make(255, 255, 255), 0);
-        lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_long_mode(text_label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(text_label, 75);
+        lv_obj_set_style_text_font(text_label, &lv_font_montserrat_13, 0);
+        lv_obj_set_style_text_color(text_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_LEFT, 0);
+        lv_label_set_long_mode(text_label, LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(text_label, 90);
     }
-    
-    if (callback && user_data) {
+
+    if (callback) {
         lv_obj_add_event_cb(tile, callback, LV_EVENT_CLICKED, (void*)user_data);
     }
-    
+
     return tile;
 }
 
@@ -3059,7 +3070,7 @@ static void save_screenshot_to_sd(void)
 static void screenshot_click_cb(lv_event_t *e)
 {
     (void)e;
-    ESP_LOGI(TAG, "LABORATORIUM clicked - taking screenshot");
+    ESP_LOGI(TAG, "CONTROL PANEL title clicked - taking screenshot");
     save_screenshot_to_sd();
 }
 #else
@@ -3083,22 +3094,34 @@ static void create_status_bar(void)
         portal_icon = NULL;
     }
     
+    if (!ui_theme_is_initialized()) {
+        ui_theme_init(lv_display_get_default());
+    }
+
     // Create status bar at top of screen
     status_bar = lv_obj_create(scr);
-    lv_obj_set_size(status_bar, lv_pct(100), 40);
+    lv_obj_set_size(status_bar, lv_pct(100), 52);
     lv_obj_align(status_bar, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(status_bar, lv_color_make(30, 30, 30), 0);  // Slightly lighter than background
-    lv_obj_set_style_border_width(status_bar, 0, 0);
-    lv_obj_set_style_radius(status_bar, 0, 0);
-    lv_obj_set_style_pad_hor(status_bar, 16, 0);
+    ui_theme_apply_appbar(status_bar);
+    lv_obj_set_style_pad_left(status_bar, 14, 0);
+    lv_obj_set_style_pad_right(status_bar, 14, 0);
+    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
-    
-    // App title centered - clickable for screenshot
-    lv_obj_t *app_title = lv_label_create(status_bar);
-    lv_label_set_text(app_title, "LABORATORIUM");
-    lv_obj_set_style_text_font(app_title, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(app_title, lv_color_make(255, 255, 255), 0);
-    lv_obj_align(app_title, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_t *left_cluster = lv_obj_create(status_bar);
+    lv_obj_remove_style_all(left_cluster);
+    lv_obj_set_size(left_cluster, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(left_cluster, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(left_cluster, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(left_cluster, 10, 0);
+    lv_obj_clear_flag(left_cluster, LV_OBJ_FLAG_CLICKABLE);
+
+    // App title - clickable for screenshot
+    lv_obj_t *app_title = lv_label_create(left_cluster);
+    lv_label_set_text(app_title, "CONTROL PANEL");
+    lv_obj_set_style_text_font(app_title, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(app_title, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
     
 #if SCREENSHOT_ENABLED
     // Make title clickable for screenshot trigger
@@ -3106,38 +3129,47 @@ static void create_status_bar(void)
     lv_obj_add_event_cb(app_title, screenshot_click_cb, LV_EVENT_CLICKED, NULL);
     screenshot_title_label = app_title;  // Store for visual feedback
 #endif
-    
-    // Portal icon (shown when portal is active) - left of battery, non-clickable
-    portal_icon = lv_label_create(status_bar);
+
+    lv_obj_t *right_cluster = lv_obj_create(status_bar);
+    lv_obj_remove_style_all(right_cluster);
+    lv_obj_set_size(right_cluster, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(right_cluster, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(right_cluster, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(right_cluster, 10, 0);
+    lv_obj_clear_flag(right_cluster, LV_OBJ_FLAG_CLICKABLE);
+
+    // Portal icon (shown when portal is active)
+    portal_icon = lv_label_create(right_cluster);
     lv_label_set_text(portal_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_font(portal_icon, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(portal_icon, COLOR_MATERIAL_ORANGE, 0);
-    lv_obj_align(portal_icon, LV_ALIGN_RIGHT_MID, -160, 0);  // Left of battery container
+    lv_obj_set_style_text_font(portal_icon, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(portal_icon, ui_theme_color(UI_COLOR_ACCENT_SECONDARY), 0);
     lv_obj_add_flag(portal_icon, LV_OBJ_FLAG_HIDDEN);  // Hidden by default
-    
-    // Battery status container on the right - use fixed width to ensure visibility
-    lv_obj_t *battery_cont = lv_obj_create(status_bar);
-    lv_obj_set_size(battery_cont, 140, 36);  // Fixed width for voltage + icon
-    lv_obj_set_style_bg_opa(battery_cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(battery_cont, 0, 0);
-    lv_obj_set_style_pad_all(battery_cont, 0, 0);
-    lv_obj_align(battery_cont, LV_ALIGN_RIGHT_MID, -8, 0);  // Small margin from edge
+
+    // Battery status container on the right
+    lv_obj_t *battery_cont = lv_obj_create(right_cluster);
+    lv_obj_set_size(battery_cont, 150, 38);
+    ui_theme_apply_card(battery_cont);
+    lv_obj_set_style_bg_opa(battery_cont, LV_OPA_35, 0);
+    lv_obj_set_style_pad_left(battery_cont, 10, 0);
+    lv_obj_set_style_pad_right(battery_cont, 10, 0);
+    lv_obj_set_style_pad_top(battery_cont, 2, 0);
+    lv_obj_set_style_pad_bottom(battery_cont, 2, 0);
     lv_obj_set_flex_flow(battery_cont, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(battery_cont, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(battery_cont, 8, 0);
+    lv_obj_set_style_pad_column(battery_cont, 6, 0);
     lv_obj_clear_flag(battery_cont, LV_OBJ_FLAG_SCROLLABLE);
-    
+
     // Battery voltage label (e.g., "8.13V")
     battery_voltage_label = lv_label_create(battery_cont);
     lv_label_set_text(battery_voltage_label, "-.--V");
-    lv_obj_set_style_text_font(battery_voltage_label, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(battery_voltage_label, lv_color_make(255, 255, 255), 0);
-    
+    lv_obj_set_style_text_font(battery_voltage_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(battery_voltage_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
     // Charging status label (just icon, no text to save space)
     charging_status_label = lv_label_create(battery_cont);
     lv_label_set_text(charging_status_label, LV_SYMBOL_BATTERY_FULL);
-    lv_obj_set_style_text_font(charging_status_label, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(charging_status_label, lv_color_make(255, 255, 255), 0);
+    lv_obj_set_style_text_font(charging_status_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(charging_status_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
     
     // Initialize INA226 if not already done
     if (!ina226_initialized) {
@@ -3181,100 +3213,36 @@ static void uart_send_command_for_tab(const char *cmd)
     ESP_LOGI(TAG, "[%s/Tab] Sent command: %s", tab_transport_name(current_tab), cmd);
 }
 
+static void style_tab_button(lv_obj_t *btn, bool active, lv_color_t accent)
+{
+    if (!btn) return;
+
+    lv_color_t inactive_bg = ui_theme_color(UI_COLOR_SURFACE_ALT);
+    lv_color_t active_bg = lv_color_mix(accent, ui_theme_color(UI_COLOR_SURFACE_ALT), LV_OPA_30);
+
+    lv_obj_set_style_bg_color(btn, active ? active_bg : inactive_bg, 0);
+    lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_NONE, 0);
+    lv_obj_set_style_border_width(btn, active ? 2 : 1, 0);
+    lv_obj_set_style_border_color(btn, active ? accent : ui_theme_color(UI_COLOR_BORDER), 0);
+    lv_obj_set_style_shadow_width(btn, active ? 10 : 0, 0);
+    lv_obj_set_style_shadow_color(btn, accent, 0);
+    lv_obj_set_style_shadow_opa(btn, active ? LV_OPA_35 : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_translate_y(btn, active ? -1 : 0, 0);
+}
+
 // Update tab button styles to show active tab
 static void update_tab_styles(void)
 {
-    if (!internal_tab_btn) return;  // Need at least INTERNAL tab
-    
-    // ========== Grove tab styling ==========
-    if (grove_tab_btn) {
-        if (current_tab == TAB_GROVE) {
-            // Active state - bright color with glow + border
-            lv_obj_set_style_bg_color(grove_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
-            lv_obj_set_style_bg_grad_color(grove_tab_btn, lv_color_hex(0x0097A7), 0);
-            lv_obj_set_style_bg_grad_dir(grove_tab_btn, LV_GRAD_DIR_VER, 0);
-            lv_obj_set_style_shadow_opa(grove_tab_btn, LV_OPA_80, 0);
-            lv_obj_set_style_shadow_spread(grove_tab_btn, 4, 0);
-            // Active indicator - white top border
-            lv_obj_set_style_border_width(grove_tab_btn, 3, 0);
-            lv_obj_set_style_border_color(grove_tab_btn, lv_color_hex(0xFFFFFF), 0);
-            lv_obj_set_style_border_side(grove_tab_btn, LV_BORDER_SIDE_TOP, 0);
-        } else {
-            // Inactive state - dark muted color, no border
-            lv_obj_set_style_bg_color(grove_tab_btn, lv_color_hex(TAB_COLOR_UART1_INACTIVE), 0);
-            lv_obj_set_style_bg_grad_dir(grove_tab_btn, LV_GRAD_DIR_NONE, 0);
-            lv_obj_set_style_shadow_opa(grove_tab_btn, LV_OPA_20, 0);
-            lv_obj_set_style_shadow_spread(grove_tab_btn, 0, 0);
-            lv_obj_set_style_border_width(grove_tab_btn, 0, 0);
-        }
-    }
+    if (!internal_tab_btn) return;
 
-    // ========== USB tab styling ==========
-    if (usb_tab_btn) {
-        if (current_tab == TAB_USB) {
-            // Active state - bright color with glow + border
-            lv_obj_set_style_bg_color(usb_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
-            lv_obj_set_style_bg_grad_color(usb_tab_btn, lv_color_hex(0x0097A7), 0);
-            lv_obj_set_style_bg_grad_dir(usb_tab_btn, LV_GRAD_DIR_VER, 0);
-            lv_obj_set_style_shadow_opa(usb_tab_btn, LV_OPA_80, 0);
-            lv_obj_set_style_shadow_spread(usb_tab_btn, 4, 0);
-            // Active indicator - white top border
-            lv_obj_set_style_border_width(usb_tab_btn, 3, 0);
-            lv_obj_set_style_border_color(usb_tab_btn, lv_color_hex(0xFFFFFF), 0);
-            lv_obj_set_style_border_side(usb_tab_btn, LV_BORDER_SIDE_TOP, 0);
-        } else {
-            // Inactive state - dark muted color, no border
-            lv_obj_set_style_bg_color(usb_tab_btn, lv_color_hex(TAB_COLOR_UART1_INACTIVE), 0);
-            lv_obj_set_style_bg_grad_dir(usb_tab_btn, LV_GRAD_DIR_NONE, 0);
-            lv_obj_set_style_shadow_opa(usb_tab_btn, LV_OPA_20, 0);
-            lv_obj_set_style_shadow_spread(usb_tab_btn, 0, 0);
-            lv_obj_set_style_border_width(usb_tab_btn, 0, 0);
-        }
-    }
-    
-    // ========== UART 2 tab styling ==========
-    if (mbus_tab_btn) {
-        if (current_tab == TAB_MBUS) {
-            // Active state - bright color with glow + border
-            lv_obj_set_style_bg_color(mbus_tab_btn, lv_color_hex(TAB_COLOR_MBUS_ACTIVE), 0);
-            lv_obj_set_style_bg_grad_color(mbus_tab_btn, lv_color_hex(0xF57C00), 0);
-            lv_obj_set_style_bg_grad_dir(mbus_tab_btn, LV_GRAD_DIR_VER, 0);
-            lv_obj_set_style_shadow_opa(mbus_tab_btn, LV_OPA_80, 0);
-            lv_obj_set_style_shadow_spread(mbus_tab_btn, 4, 0);
-            // Active indicator - white top border
-            lv_obj_set_style_border_width(mbus_tab_btn, 3, 0);
-            lv_obj_set_style_border_color(mbus_tab_btn, lv_color_hex(0xFFFFFF), 0);
-            lv_obj_set_style_border_side(mbus_tab_btn, LV_BORDER_SIDE_TOP, 0);
-        } else {
-            // Inactive state - dark muted color, no border
-            lv_obj_set_style_bg_color(mbus_tab_btn, lv_color_hex(TAB_COLOR_MBUS_INACTIVE), 0);
-            lv_obj_set_style_bg_grad_dir(mbus_tab_btn, LV_GRAD_DIR_NONE, 0);
-            lv_obj_set_style_shadow_opa(mbus_tab_btn, LV_OPA_20, 0);
-            lv_obj_set_style_shadow_spread(mbus_tab_btn, 0, 0);
-            lv_obj_set_style_border_width(mbus_tab_btn, 0, 0);
-        }
-    }
-    
-    // ========== INTERNAL tab styling ==========
-    if (current_tab == TAB_INTERNAL) {
-        // Active state - bright color with glow + border
-        lv_obj_set_style_bg_color(internal_tab_btn, lv_color_hex(TAB_COLOR_INTERNAL_ACTIVE), 0);
-        lv_obj_set_style_bg_grad_color(internal_tab_btn, lv_color_hex(0x7B1FA2), 0);
-        lv_obj_set_style_bg_grad_dir(internal_tab_btn, LV_GRAD_DIR_VER, 0);
-        lv_obj_set_style_shadow_opa(internal_tab_btn, LV_OPA_80, 0);
-        lv_obj_set_style_shadow_spread(internal_tab_btn, 4, 0);
-        // Active indicator - white top border
-        lv_obj_set_style_border_width(internal_tab_btn, 3, 0);
-        lv_obj_set_style_border_color(internal_tab_btn, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_border_side(internal_tab_btn, LV_BORDER_SIDE_TOP, 0);
-    } else {
-        // Inactive state - dark muted color, no border
-        lv_obj_set_style_bg_color(internal_tab_btn, lv_color_hex(TAB_COLOR_INTERNAL_INACTIVE), 0);
-        lv_obj_set_style_bg_grad_dir(internal_tab_btn, LV_GRAD_DIR_NONE, 0);
-        lv_obj_set_style_shadow_opa(internal_tab_btn, LV_OPA_20, 0);
-        lv_obj_set_style_shadow_spread(internal_tab_btn, 0, 0);
-        lv_obj_set_style_border_width(internal_tab_btn, 0, 0);
-    }
+    lv_color_t uart_accent = ui_theme_color(UI_COLOR_ACCENT_PRIMARY);
+    lv_color_t mbus_accent = ui_theme_color(UI_COLOR_ACCENT_SECONDARY);
+    lv_color_t internal_accent = lv_color_hex(0xA67CFF);
+
+    style_tab_button(grove_tab_btn, current_tab == TAB_GROVE, uart_accent);
+    style_tab_button(usb_tab_btn, current_tab == TAB_USB, uart_accent);
+    style_tab_button(mbus_tab_btn, current_tab == TAB_MBUS, mbus_accent);
+    style_tab_button(internal_tab_btn, current_tab == TAB_INTERNAL, internal_accent);
 }
 
 // Tab click callback - hide/show containers instead of recreating
@@ -3340,11 +3308,23 @@ static void tab_click_cb(lv_event_t *e)
     }
 }
 
+static void style_tab_container_common(lv_obj_t *container, lv_coord_t height)
+{
+    if (!container) return;
+    lv_obj_set_size(container, lv_pct(100), height);
+    lv_obj_align(container, LV_ALIGN_TOP_MID, 0, UI_CHROME_HEIGHT);
+    lv_obj_set_style_bg_color(container, COLOR_MATERIAL_BG, 0);
+    lv_obj_set_style_border_width(container, 0, 0);
+    lv_obj_set_style_radius(container, 0, 0);
+    lv_obj_set_style_pad_all(container, 0, 0);
+    lv_obj_clear_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+}
+
 // Create persistent tab containers (called once at startup)
 static void create_tab_containers(void)
 {
     lv_obj_t *scr = lv_scr_act();
-    lv_coord_t height = lv_disp_get_ver_res(NULL) - 85;  // Below status bar + tab bar
+    lv_coord_t height = lv_disp_get_ver_res(NULL) - UI_CHROME_HEIGHT;  // Below status and tab bars
     
     // Set initial tab to first detected transport
     if (grove_detected) {
@@ -3360,13 +3340,7 @@ static void create_tab_containers(void)
     // Grove container
     if (grove_detected) {
         grove_container = lv_obj_create(scr);
-        lv_obj_set_size(grove_container, lv_pct(100), height);
-        lv_obj_align(grove_container, LV_ALIGN_TOP_MID, 0, 85);
-        lv_obj_set_style_bg_color(grove_container, COLOR_MATERIAL_BG, 0);
-        lv_obj_set_style_border_width(grove_container, 0, 0);
-        lv_obj_set_style_radius(grove_container, 0, 0);
-        lv_obj_set_style_pad_all(grove_container, 0, 0);
-        lv_obj_clear_flag(grove_container, LV_OBJ_FLAG_SCROLLABLE);
+        style_tab_container_common(grove_container, height);
         if (current_tab != TAB_GROVE) {
             lv_obj_add_flag(grove_container, LV_OBJ_FLAG_HIDDEN);
         }
@@ -3375,13 +3349,7 @@ static void create_tab_containers(void)
     // USB container
     if (usb_detected) {
         usb_container = lv_obj_create(scr);
-        lv_obj_set_size(usb_container, lv_pct(100), height);
-        lv_obj_align(usb_container, LV_ALIGN_TOP_MID, 0, 85);
-        lv_obj_set_style_bg_color(usb_container, COLOR_MATERIAL_BG, 0);
-        lv_obj_set_style_border_width(usb_container, 0, 0);
-        lv_obj_set_style_radius(usb_container, 0, 0);
-        lv_obj_set_style_pad_all(usb_container, 0, 0);
-        lv_obj_clear_flag(usb_container, LV_OBJ_FLAG_SCROLLABLE);
+        style_tab_container_common(usb_container, height);
         if (current_tab != TAB_USB) {
             lv_obj_add_flag(usb_container, LV_OBJ_FLAG_HIDDEN);
         }
@@ -3390,13 +3358,7 @@ static void create_tab_containers(void)
     // MBus container
     if (mbus_detected) {
         mbus_container = lv_obj_create(scr);
-        lv_obj_set_size(mbus_container, lv_pct(100), height);
-        lv_obj_align(mbus_container, LV_ALIGN_TOP_MID, 0, 85);
-        lv_obj_set_style_bg_color(mbus_container, COLOR_MATERIAL_BG, 0);
-        lv_obj_set_style_border_width(mbus_container, 0, 0);
-        lv_obj_set_style_radius(mbus_container, 0, 0);
-        lv_obj_set_style_pad_all(mbus_container, 0, 0);
-        lv_obj_clear_flag(mbus_container, LV_OBJ_FLAG_SCROLLABLE);
+        style_tab_container_common(mbus_container, height);
         // Hide if not the initial tab
         if (current_tab != TAB_MBUS) {
             lv_obj_add_flag(mbus_container, LV_OBJ_FLAG_HIDDEN);
@@ -3405,13 +3367,7 @@ static void create_tab_containers(void)
     
     // INTERNAL container - always created
     internal_container = lv_obj_create(scr);
-    lv_obj_set_size(internal_container, lv_pct(100), height);
-    lv_obj_align(internal_container, LV_ALIGN_TOP_MID, 0, 85);
-    lv_obj_set_style_bg_color(internal_container, COLOR_MATERIAL_BG, 0);
-    lv_obj_set_style_border_width(internal_container, 0, 0);
-    lv_obj_set_style_radius(internal_container, 0, 0);
-    lv_obj_set_style_pad_all(internal_container, 0, 0);
-    lv_obj_clear_flag(internal_container, LV_OBJ_FLAG_SCROLLABLE);
+    style_tab_container_common(internal_container, height);
     // Hide if not the initial tab
     if (current_tab != TAB_INTERNAL) {
         lv_obj_add_flag(internal_container, LV_OBJ_FLAG_HIDDEN);
@@ -3433,44 +3389,26 @@ static void reload_gui_for_detection(void)
              mbus_detected ? "YES" : "NO");
     
     lv_obj_t *scr = lv_scr_act();
-    lv_coord_t height = lv_disp_get_ver_res(NULL) - 85;
+    lv_coord_t height = lv_disp_get_ver_res(NULL) - UI_CHROME_HEIGHT;
     
     // Handle Grove container based on detection
     if (grove_detected && !grove_container) {
         grove_container = lv_obj_create(scr);
-        lv_obj_set_size(grove_container, lv_pct(100), height);
-        lv_obj_align(grove_container, LV_ALIGN_TOP_MID, 0, 85);
-        lv_obj_set_style_bg_color(grove_container, COLOR_MATERIAL_BG, 0);
-        lv_obj_set_style_border_width(grove_container, 0, 0);
-        lv_obj_set_style_radius(grove_container, 0, 0);
-        lv_obj_set_style_pad_all(grove_container, 0, 0);
-        lv_obj_clear_flag(grove_container, LV_OBJ_FLAG_SCROLLABLE);
+        style_tab_container_common(grove_container, height);
         ESP_LOGI(TAG, "Created Grove container");
     }
 
     // Handle USB container based on detection
     if (usb_detected && !usb_container) {
         usb_container = lv_obj_create(scr);
-        lv_obj_set_size(usb_container, lv_pct(100), height);
-        lv_obj_align(usb_container, LV_ALIGN_TOP_MID, 0, 85);
-        lv_obj_set_style_bg_color(usb_container, COLOR_MATERIAL_BG, 0);
-        lv_obj_set_style_border_width(usb_container, 0, 0);
-        lv_obj_set_style_radius(usb_container, 0, 0);
-        lv_obj_set_style_pad_all(usb_container, 0, 0);
-        lv_obj_clear_flag(usb_container, LV_OBJ_FLAG_SCROLLABLE);
+        style_tab_container_common(usb_container, height);
         ESP_LOGI(TAG, "Created USB container");
     }
     
     // Handle MBus container based on detection
     if (mbus_detected && !mbus_container) {
         mbus_container = lv_obj_create(scr);
-        lv_obj_set_size(mbus_container, lv_pct(100), height);
-        lv_obj_align(mbus_container, LV_ALIGN_TOP_MID, 0, 85);
-        lv_obj_set_style_bg_color(mbus_container, COLOR_MATERIAL_BG, 0);
-        lv_obj_set_style_border_width(mbus_container, 0, 0);
-        lv_obj_set_style_radius(mbus_container, 0, 0);
-        lv_obj_set_style_pad_all(mbus_container, 0, 0);
-        lv_obj_clear_flag(mbus_container, LV_OBJ_FLAG_SCROLLABLE);
+        style_tab_container_common(mbus_container, height);
         lv_obj_add_flag(mbus_container, LV_OBJ_FLAG_HIDDEN);
         ESP_LOGI(TAG, "Created MBus container");
     }
@@ -3494,11 +3432,56 @@ static void reload_gui_for_detection(void)
 }
 
 // Create tab bar below status bar
+static lv_obj_t *create_tab_button(
+    lv_obj_t *parent,
+    int width,
+    const char *icon,
+    const char *label_text,
+    bool sd_present,
+    tab_id_t tab_id)
+{
+    lv_obj_t *btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, width, 48);
+    ui_theme_apply_secondary_btn(btn);
+    lv_obj_set_style_radius(btn, 12, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_set_style_pad_left(btn, 10, 0);
+    lv_obj_set_style_pad_right(btn, 10, 0);
+    lv_obj_add_event_cb(btn, tab_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)tab_id);
+
+    lv_obj_t *content = lv_obj_create(btn);
+    lv_obj_remove_style_all(content);
+    lv_obj_set_size(content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(content, 6, 0);
+    lv_obj_center(content);
+    lv_obj_clear_flag(content, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *icon_label = lv_label_create(content);
+    lv_label_set_text(icon_label, icon);
+    lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(icon_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    lv_obj_t *text_label = lv_label_create(content);
+    lv_label_set_text(text_label, label_text);
+    lv_obj_set_style_text_font(text_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(text_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    if (!sd_present) {
+        lv_obj_t *sd_warn = lv_label_create(content);
+        lv_label_set_text(sd_warn, LV_SYMBOL_WARNING);
+        lv_obj_set_style_text_font(sd_warn, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(sd_warn, ui_theme_color(UI_COLOR_WARNING), 0);
+    }
+
+    return btn;
+}
+
 static void create_tab_bar(void)
 {
     lv_obj_t *scr = lv_scr_act();
-    
-    // Delete existing tab bar if present
+
     if (tab_bar) {
         lv_obj_del(tab_bar);
         tab_bar = NULL;
@@ -3507,183 +3490,39 @@ static void create_tab_bar(void)
         mbus_tab_btn = NULL;
         internal_tab_btn = NULL;
     }
-    
-    // Create tab bar container with gradient background
+
     tab_bar = lv_obj_create(scr);
-    lv_obj_set_size(tab_bar, lv_pct(100), 45);
-    lv_obj_align(tab_bar, LV_ALIGN_TOP_MID, 0, 40);  // Below status bar
-    lv_obj_set_style_bg_color(tab_bar, lv_color_hex(0x1A1A2E), 0);
-    lv_obj_set_style_bg_grad_color(tab_bar, lv_color_hex(0x16213E), 0);
-    lv_obj_set_style_bg_grad_dir(tab_bar, LV_GRAD_DIR_HOR, 0);
-    lv_obj_set_style_border_width(tab_bar, 0, 0);
-    lv_obj_set_style_radius(tab_bar, 0, 0);
-    lv_obj_set_style_pad_all(tab_bar, 4, 0);
-    lv_obj_set_style_pad_gap(tab_bar, 8, 0);
+    lv_obj_set_size(tab_bar, lv_pct(100), 56);
+    lv_obj_align(tab_bar, LV_ALIGN_TOP_MID, 0, 52);
+    ui_theme_apply_tabbar(tab_bar);
+    lv_obj_set_style_pad_left(tab_bar, 6, 0);
+    lv_obj_set_style_pad_right(tab_bar, 6, 0);
+    lv_obj_set_style_pad_top(tab_bar, 4, 0);
+    lv_obj_set_style_pad_bottom(tab_bar, 4, 0);
+    lv_obj_set_style_pad_column(tab_bar, 6, 0);
     lv_obj_set_flex_flow(tab_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tab_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(tab_bar, LV_OBJ_FLAG_SCROLLABLE);
-    
-    // Calculate tab count based on detected transports
+
     int tab_count = (grove_detected ? 1 : 0) + (usb_detected ? 1 : 0) + (mbus_detected ? 1 : 0) + 1;
-    int tab_width = (lv_disp_get_hor_res(NULL) - 24) / tab_count;  // Account for padding and gaps
-    
-    // ========== Grove tab (only if detected) ==========
+    int tab_width = (lv_disp_get_hor_res(NULL) - 12 - ((tab_count - 1) * 6)) / tab_count;
+
     if (grove_detected) {
-        grove_tab_btn = lv_btn_create(tab_bar);
-        lv_obj_set_size(grove_tab_btn, tab_width, 37);
-        lv_obj_set_style_radius(grove_tab_btn, 8, 0);
-        lv_obj_set_style_shadow_width(grove_tab_btn, 8, 0);
-        lv_obj_set_style_shadow_color(grove_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
-        lv_obj_set_style_shadow_opa(grove_tab_btn, LV_OPA_30, 0);
-        lv_obj_add_event_cb(grove_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)TAB_GROVE);
-        
-        // Icon + Label container
-        lv_obj_t *grove_content = lv_obj_create(grove_tab_btn);
-        lv_obj_remove_style_all(grove_content);
-        lv_obj_set_size(grove_content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(grove_content, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(grove_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_gap(grove_content, 6, 0);
-        lv_obj_center(grove_content);
-        lv_obj_clear_flag(grove_content, LV_OBJ_FLAG_CLICKABLE);
-        
-        lv_obj_t *grove_icon = lv_label_create(grove_content);
-        lv_label_set_text(grove_icon, LV_SYMBOL_WIFI);
-        lv_obj_set_style_text_font(grove_icon, &lv_font_montserrat_18, 0);
-        lv_obj_set_style_text_color(grove_icon, lv_color_hex(0xFFFFFF), 0);
-        
-        lv_obj_t *grove_label = lv_label_create(grove_content);
-        lv_label_set_text(grove_label, "GROVE");
-        lv_obj_set_style_text_font(grove_label, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(grove_label, lv_color_hex(0xFFFFFF), 0);
-        
-        // SD card warning icon (if no SD card)
-        if (!grove_ctx.sd_card_present) {
-            lv_obj_t *sd_warn = lv_label_create(grove_content);
-            lv_label_set_text(sd_warn, LV_SYMBOL_WARNING);
-            lv_obj_set_style_text_font(sd_warn, &lv_font_montserrat_14, 0);
-            lv_obj_set_style_text_color(sd_warn, lv_color_hex(0xFF5722), 0);  // Orange warning
-        }
+        grove_tab_btn = create_tab_button(tab_bar, tab_width, LV_SYMBOL_WIFI, "GROVE", grove_ctx.sd_card_present, TAB_GROVE);
     }
 
-    // ========== USB tab (only if detected) ==========
     if (usb_detected) {
-        usb_tab_btn = lv_btn_create(tab_bar);
-        lv_obj_set_size(usb_tab_btn, tab_width, 37);
-        lv_obj_set_style_radius(usb_tab_btn, 8, 0);
-        lv_obj_set_style_shadow_width(usb_tab_btn, 8, 0);
-        lv_obj_set_style_shadow_color(usb_tab_btn, lv_color_hex(TAB_COLOR_UART1_ACTIVE), 0);
-        lv_obj_set_style_shadow_opa(usb_tab_btn, LV_OPA_30, 0);
-        lv_obj_add_event_cb(usb_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)TAB_USB);
-
-        // Icon + Label container
-        lv_obj_t *usb_content = lv_obj_create(usb_tab_btn);
-        lv_obj_remove_style_all(usb_content);
-        lv_obj_set_size(usb_content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(usb_content, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(usb_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_gap(usb_content, 6, 0);
-        lv_obj_center(usb_content);
-        lv_obj_clear_flag(usb_content, LV_OBJ_FLAG_CLICKABLE);
-
-        lv_obj_t *usb_icon = lv_label_create(usb_content);
-        lv_label_set_text(usb_icon, LV_SYMBOL_USB);
-        lv_obj_set_style_text_font(usb_icon, &lv_font_montserrat_18, 0);
-        lv_obj_set_style_text_color(usb_icon, lv_color_hex(0xFFFFFF), 0);
-
-        lv_obj_t *usb_label = lv_label_create(usb_content);
-        lv_label_set_text(usb_label, "USB");
-        lv_obj_set_style_text_font(usb_label, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(usb_label, lv_color_hex(0xFFFFFF), 0);
-        
-        // SD card warning icon (if no SD card)
-        if (!usb_ctx.sd_card_present) {
-            lv_obj_t *sd_warn = lv_label_create(usb_content);
-            lv_label_set_text(sd_warn, LV_SYMBOL_WARNING);
-            lv_obj_set_style_text_font(sd_warn, &lv_font_montserrat_14, 0);
-            lv_obj_set_style_text_color(sd_warn, lv_color_hex(0xFF5722), 0);  // Orange warning
-        }
+        usb_tab_btn = create_tab_button(tab_bar, tab_width, LV_SYMBOL_USB, "USB", usb_ctx.sd_card_present, TAB_USB);
     }
-    
-    // ========== MBus tab (only if MBus detected) ==========
+
     if (mbus_detected) {
-        mbus_tab_btn = lv_btn_create(tab_bar);
-        lv_obj_set_size(mbus_tab_btn, tab_width, 37);
-        lv_obj_set_style_radius(mbus_tab_btn, 8, 0);
-        lv_obj_set_style_shadow_width(mbus_tab_btn, 8, 0);
-        lv_obj_set_style_shadow_color(mbus_tab_btn, lv_color_hex(TAB_COLOR_MBUS_ACTIVE), 0);
-        lv_obj_set_style_shadow_opa(mbus_tab_btn, LV_OPA_30, 0);
-        lv_obj_add_event_cb(mbus_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)TAB_MBUS);
-        
-        // Icon + Label container
-        lv_obj_t *mbus_content = lv_obj_create(mbus_tab_btn);
-        lv_obj_remove_style_all(mbus_content);
-        lv_obj_set_size(mbus_content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(mbus_content, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(mbus_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_gap(mbus_content, 6, 0);
-        lv_obj_center(mbus_content);
-        lv_obj_clear_flag(mbus_content, LV_OBJ_FLAG_CLICKABLE);
-        
-        lv_obj_t *mbus_icon = lv_label_create(mbus_content);
-        lv_label_set_text(mbus_icon, LV_SYMBOL_GPS);
-        lv_obj_set_style_text_font(mbus_icon, &lv_font_montserrat_18, 0);
-        lv_obj_set_style_text_color(mbus_icon, lv_color_hex(0xFFFFFF), 0);
-        
-        lv_obj_t *mbus_label = lv_label_create(mbus_content);
-        lv_label_set_text(mbus_label, "MBUS");
-        lv_obj_set_style_text_font(mbus_label, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(mbus_label, lv_color_hex(0xFFFFFF), 0);
-        
-        // SD card warning icon (if no SD card)
-        if (!mbus_ctx.sd_card_present) {
-            lv_obj_t *sd_warn = lv_label_create(mbus_content);
-            lv_label_set_text(sd_warn, LV_SYMBOL_WARNING);
-            lv_obj_set_style_text_font(sd_warn, &lv_font_montserrat_14, 0);
-            lv_obj_set_style_text_color(sd_warn, lv_color_hex(0xFF5722), 0);  // Orange warning
-        }
+        mbus_tab_btn = create_tab_button(tab_bar, tab_width, LV_SYMBOL_GPS, "MBUS", mbus_ctx.sd_card_present, TAB_MBUS);
     }
-    
-    // ========== INTERNAL tab ==========
-    internal_tab_btn = lv_btn_create(tab_bar);
-    lv_obj_set_size(internal_tab_btn, tab_width, 37);
-    lv_obj_set_style_radius(internal_tab_btn, 8, 0);
-    lv_obj_set_style_shadow_width(internal_tab_btn, 8, 0);
-    lv_obj_set_style_shadow_color(internal_tab_btn, lv_color_hex(TAB_COLOR_INTERNAL_ACTIVE), 0);
-    lv_obj_set_style_shadow_opa(internal_tab_btn, LV_OPA_30, 0);
-    lv_obj_add_event_cb(internal_tab_btn, tab_click_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)TAB_INTERNAL);
-    
-    // Icon + Label container
-    lv_obj_t *internal_content = lv_obj_create(internal_tab_btn);
-    lv_obj_remove_style_all(internal_content);
-    lv_obj_set_size(internal_content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(internal_content, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(internal_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_gap(internal_content, 6, 0);
-    lv_obj_center(internal_content);
-    lv_obj_clear_flag(internal_content, LV_OBJ_FLAG_CLICKABLE);
-    
-    lv_obj_t *internal_icon = lv_label_create(internal_content);
-    lv_label_set_text(internal_icon, LV_SYMBOL_SETTINGS);
-    lv_obj_set_style_text_font(internal_icon, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(internal_icon, lv_color_hex(0xFFFFFF), 0);
-    
-    lv_obj_t *internal_label = lv_label_create(internal_content);
-    lv_label_set_text(internal_label, "INTERNAL");
-    lv_obj_set_style_text_font(internal_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(internal_label, lv_color_hex(0xFFFFFF), 0);
-    
-    // SD card warning icon (if no SD card on Tab5)
-    if (!internal_sd_present) {
-        lv_obj_t *sd_warn = lv_label_create(internal_content);
-        lv_label_set_text(sd_warn, LV_SYMBOL_WARNING);
-        lv_obj_set_style_text_font(sd_warn, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(sd_warn, lv_color_hex(0xFF5722), 0);  // Orange warning
-    }
-    
-    // Apply active tab styling
+
+    internal_tab_btn = create_tab_button(tab_bar, tab_width, LV_SYMBOL_SETTINGS, "INTERNAL", internal_sd_present, TAB_INTERNAL);
+
     update_tab_styles();
-    
+
     ESP_LOGI(TAG, "Tab bar created: tabs=%d (Grove=%s, USB=%s, MBus=%s)",
              tab_count,
              grove_detected ? "YES" : "NO",
@@ -5115,9 +4954,8 @@ static void show_arp_poison_page(void)
     if (!container) return;
     
     arp_poison_page = lv_obj_create(container);
-    lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(arp_poison_page, lv_pct(100), scr_height - 85);
-    lv_obj_align(arp_poison_page, LV_ALIGN_TOP_MID, 0, 85);
+    lv_obj_set_size(arp_poison_page, lv_pct(100), lv_pct(100));
+    lv_obj_align(arp_poison_page, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(arp_poison_page, lv_color_hex(0x1A1A1A), 0);
     lv_obj_set_style_border_width(arp_poison_page, 0, 0);
     lv_obj_set_style_pad_all(arp_poison_page, 15, 0);
@@ -6789,11 +6627,11 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
     *tiles_ptr = lv_obj_create(container);
     lv_obj_set_size(*tiles_ptr, lv_pct(100), lv_pct(100));
     lv_obj_align(*tiles_ptr, LV_ALIGN_TOP_MID, 0, 0);
+    ui_theme_apply_page(*tiles_ptr);
     lv_obj_set_style_bg_color(*tiles_ptr, COLOR_MATERIAL_BG, 0);
-    lv_obj_set_style_border_width(*tiles_ptr, 0, 0);
-    lv_obj_set_style_radius(*tiles_ptr, 0, 0);
-    lv_obj_set_style_pad_all(*tiles_ptr, 20, 0);
-    lv_obj_set_style_pad_gap(*tiles_ptr, 20, 0);
+    lv_obj_set_style_pad_all(*tiles_ptr, 16, 0);
+    lv_obj_set_style_pad_column(*tiles_ptr, 16, 0);
+    lv_obj_set_style_pad_row(*tiles_ptr, 16, 0);
     lv_obj_set_flex_flow(*tiles_ptr, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(*tiles_ptr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(*tiles_ptr, LV_OBJ_FLAG_SCROLLABLE);
@@ -6896,11 +6734,11 @@ static void show_internal_tiles(void)
     internal_tiles = lv_obj_create(internal_container);
     lv_obj_set_size(internal_tiles, lv_pct(100), lv_pct(100));
     lv_obj_align(internal_tiles, LV_ALIGN_TOP_MID, 0, 0);
+    ui_theme_apply_page(internal_tiles);
     lv_obj_set_style_bg_color(internal_tiles, COLOR_MATERIAL_BG, 0);
-    lv_obj_set_style_border_width(internal_tiles, 0, 0);
-    lv_obj_set_style_radius(internal_tiles, 0, 0);
-    lv_obj_set_style_pad_all(internal_tiles, 20, 0);
-    lv_obj_set_style_pad_gap(internal_tiles, 20, 0);
+    lv_obj_set_style_pad_all(internal_tiles, 16, 0);
+    lv_obj_set_style_pad_column(internal_tiles, 16, 0);
+    lv_obj_set_style_pad_row(internal_tiles, 16, 0);
     lv_obj_set_flex_flow(internal_tiles, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(internal_tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(internal_tiles, LV_OBJ_FLAG_SCROLLABLE);
@@ -6917,9 +6755,15 @@ static void show_internal_tiles(void)
 static void show_main_tiles(void)
 {
     lv_obj_t *scr = lv_scr_act();
-    
-    // Set dark background
+
+    if (!ui_theme_is_initialized()) {
+        ui_theme_init(lv_display_get_default());
+    }
+
+    // Set dark dashboard background
     lv_obj_set_style_bg_color(scr, COLOR_MATERIAL_BG, 0);
+    lv_obj_set_style_bg_grad_color(scr, ui_theme_color(UI_COLOR_BG_LAYER), 0);
+    lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
     
     // Create status bar and tab bar
     create_status_bar();
@@ -6934,43 +6778,25 @@ static void show_main_tiles(void)
     } else {
         // Containers might be missing if detection changed after first create
         // Create any missing containers for newly detected devices
-        lv_coord_t height = lv_disp_get_ver_res(NULL) - 85;
+        lv_coord_t height = lv_disp_get_ver_res(NULL) - UI_CHROME_HEIGHT;
         
         if (grove_detected && !grove_container) {
             grove_container = lv_obj_create(scr);
-            lv_obj_set_size(grove_container, lv_pct(100), height);
-            lv_obj_align(grove_container, LV_ALIGN_TOP_MID, 0, 85);
-            lv_obj_set_style_bg_color(grove_container, COLOR_MATERIAL_BG, 0);
-            lv_obj_set_style_border_width(grove_container, 0, 0);
-            lv_obj_set_style_radius(grove_container, 0, 0);
-            lv_obj_set_style_pad_all(grove_container, 0, 0);
-            lv_obj_clear_flag(grove_container, LV_OBJ_FLAG_SCROLLABLE);
+            style_tab_container_common(grove_container, height);
             lv_obj_add_flag(grove_container, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Late-created Grove container");
         }
         
         if (usb_detected && !usb_container) {
             usb_container = lv_obj_create(scr);
-            lv_obj_set_size(usb_container, lv_pct(100), height);
-            lv_obj_align(usb_container, LV_ALIGN_TOP_MID, 0, 85);
-            lv_obj_set_style_bg_color(usb_container, COLOR_MATERIAL_BG, 0);
-            lv_obj_set_style_border_width(usb_container, 0, 0);
-            lv_obj_set_style_radius(usb_container, 0, 0);
-            lv_obj_set_style_pad_all(usb_container, 0, 0);
-            lv_obj_clear_flag(usb_container, LV_OBJ_FLAG_SCROLLABLE);
+            style_tab_container_common(usb_container, height);
             lv_obj_add_flag(usb_container, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Late-created USB container");
         }
         
         if (mbus_detected && !mbus_container) {
             mbus_container = lv_obj_create(scr);
-            lv_obj_set_size(mbus_container, lv_pct(100), height);
-            lv_obj_align(mbus_container, LV_ALIGN_TOP_MID, 0, 85);
-            lv_obj_set_style_bg_color(mbus_container, COLOR_MATERIAL_BG, 0);
-            lv_obj_set_style_border_width(mbus_container, 0, 0);
-            lv_obj_set_style_radius(mbus_container, 0, 0);
-            lv_obj_set_style_pad_all(mbus_container, 0, 0);
-            lv_obj_clear_flag(mbus_container, LV_OBJ_FLAG_SCROLLABLE);
+            style_tab_container_common(mbus_container, height);
             lv_obj_add_flag(mbus_container, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Late-created MBus container");
         }
@@ -7020,107 +6846,56 @@ static void show_scan_page(void)
     ctx->scan_page = lv_obj_create(container);
     scan_page = ctx->scan_page;  // Keep legacy reference for compatibility
     lv_obj_set_size(scan_page, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(scan_page, lv_color_hex(0x1A1A1A), 0);
-    lv_obj_set_style_border_width(scan_page, 0, 0);
-    lv_obj_set_style_pad_all(scan_page, 4, 0);  // Minimal padding for maximum list space
+    ui_theme_apply_page(scan_page);
+    lv_obj_set_style_bg_color(scan_page, ui_theme_color(UI_COLOR_BG), 0);
+    lv_obj_set_style_pad_all(scan_page, 10, 0);
     lv_obj_set_flex_flow(scan_page, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(scan_page, 2, 0);  // Minimal gap
-    
-    // Header container
-    lv_obj_t *header = lv_obj_create(scan_page);
-    lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 0, 0);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    
-    // Left side: Back button + Title
-    lv_obj_t *left_cont = lv_obj_create(header);
-    lv_obj_set_size(left_cont, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(left_cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(left_cont, 0, 0);
-    lv_obj_set_style_pad_all(left_cont, 0, 0);
-    lv_obj_set_flex_flow(left_cont, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(left_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(left_cont, 12, 0);
-    
-    // Back button
-    lv_obj_t *back_btn = lv_btn_create(left_cont);
-    lv_obj_set_size(back_btn, 72, 60);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), LV_STATE_PRESSED);
-    lv_obj_set_style_radius(back_btn, 8, 0);
-    lv_obj_add_event_cb(back_btn, back_btn_event_cb, LV_EVENT_CLICKED, NULL);
-    
-    lv_obj_t *back_icon = lv_label_create(back_btn);
-    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(back_icon, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(back_icon);
-    
-    // Title - use "Test" instead of "Attack" when Red Team is disabled
-    lv_obj_t *title = lv_label_create(left_cont);
-    lv_label_set_text(title, enable_red_team ? "Scan & Attack" : "Scan & Test");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(title, COLOR_MATERIAL_BLUE, 0);
-    
-    // Scan button container (for button + spinner)
-    lv_obj_t *btn_cont = lv_obj_create(header);
-    lv_obj_set_size(btn_cont, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(btn_cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(btn_cont, 0, 0);
-    lv_obj_set_style_pad_all(btn_cont, 0, 0);
-    lv_obj_set_flex_flow(btn_cont, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(btn_cont, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(btn_cont, 12, 0);
-    
+    lv_obj_set_style_pad_row(scan_page, 8, 0);
+
+    // App bar
+    lv_obj_t *header_actions = NULL;
+    ui_comp_create_app_bar(
+        scan_page,
+        enable_red_team ? "Scan & Attack" : "Scan & Test",
+        back_btn_event_cb,
+        NULL,
+        &header_actions);
+
     // Spinner (hidden by default)
-    spinner = lv_spinner_create(btn_cont);
-    lv_obj_set_size(spinner, 32, 32);
+    spinner = lv_spinner_create(header_actions);
+    lv_obj_set_size(spinner, 28, 28);
     lv_spinner_set_anim_params(spinner, 1000, 200);
+    lv_obj_set_style_arc_color(spinner, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(spinner, ui_theme_color(UI_COLOR_BORDER), LV_PART_MAIN);
     lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
-    
+
     // Scan button
-    scan_btn = lv_btn_create(btn_cont);
-    lv_obj_set_size(scan_btn, 120, 40);
-    lv_obj_set_style_bg_color(scan_btn, COLOR_MATERIAL_BLUE, 0);
-    lv_obj_set_style_bg_color(scan_btn, lv_color_lighten(COLOR_MATERIAL_BLUE, 30), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(scan_btn, lv_color_hex(0x444444), LV_STATE_DISABLED);
-    lv_obj_set_style_radius(scan_btn, 8, 0);
-    lv_obj_add_event_cb(scan_btn, scan_btn_click_cb, LV_EVENT_CLICKED, NULL);
-    
-    lv_obj_t *btn_label = lv_label_create(scan_btn);
-    lv_label_set_text(btn_label, "RESCAN");
-    lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(btn_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(btn_label);
-    
-    // Status label (compact)
+    scan_btn = ui_comp_create_primary_button(header_actions, "RESCAN", scan_btn_click_cb, NULL);
+    lv_obj_set_size(scan_btn, 150, UI_TOUCH_TARGET_PRIMARY);
+
+    // Status label
     status_label = lv_label_create(scan_page);
     lv_label_set_text(status_label, "Press RESCAN to search for networks");
-    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(status_label, lv_color_hex(0x888888), 0);
-    
+    ui_theme_style_label(status_label);
+
     // Network list container (scrollable) - fills remaining space above attack bar
     network_list = lv_obj_create(scan_page);
     lv_obj_set_width(network_list, lv_pct(100));
-    lv_obj_set_flex_grow(network_list, 1);  // Take all remaining vertical space
-    lv_obj_set_style_bg_color(network_list, lv_color_hex(0x1A1A1A), 0);
-    lv_obj_set_style_border_color(network_list, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_border_width(network_list, 1, 0);
-    lv_obj_set_style_radius(network_list, 8, 0);
-    lv_obj_set_style_pad_all(network_list, 6, 0);
+    lv_obj_set_flex_grow(network_list, 1);
+    ui_theme_apply_section(network_list);
+    lv_obj_set_style_bg_color(network_list, ui_theme_color(UI_COLOR_BG_LAYER), 0);
+    lv_obj_set_style_pad_all(network_list, 8, 0);
     lv_obj_set_flex_flow(network_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(network_list, 6, 0);
+    lv_obj_set_style_pad_row(network_list, 8, 0);
     lv_obj_set_scroll_dir(network_list, LV_DIR_VER);
-    
+
     // Bottom icon bar for attack tiles
     lv_obj_t *attack_bar = lv_obj_create(scan_page);
-    lv_obj_set_size(attack_bar, lv_pct(100), 70);
-    lv_obj_set_style_bg_color(attack_bar, lv_color_hex(0x1A1A1A), 0);
-    lv_obj_set_style_border_width(attack_bar, 0, 0);
-    lv_obj_set_style_pad_all(attack_bar, 5, 0);
-    lv_obj_set_style_pad_gap(attack_bar, 8, 0);
+    lv_obj_set_size(attack_bar, lv_pct(100), 88);
+    ui_theme_apply_card(attack_bar);
+    lv_obj_set_style_bg_opa(attack_bar, LV_OPA_40, 0);
+    lv_obj_set_style_pad_all(attack_bar, 8, 0);
+    lv_obj_set_style_pad_column(attack_bar, 8, 0);
     lv_obj_set_flex_flow(attack_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(attack_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(attack_bar, LV_OBJ_FLAG_SCROLLABLE);
@@ -8915,9 +8690,8 @@ static void show_esp_modem_page(void)
     
     // Create ESP Modem page container inside tab container
     esp_modem_page = lv_obj_create(container);
-    lv_coord_t modem_scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(esp_modem_page, lv_pct(100), modem_scr_height - 85);  // Account for status bar + tab bar
-    lv_obj_align(esp_modem_page, LV_ALIGN_TOP_MID, 0, 85);  // Position below status bar + tab bar
+    lv_obj_set_size(esp_modem_page, lv_pct(100), lv_pct(100));
+    lv_obj_align(esp_modem_page, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(esp_modem_page, lv_color_hex(0x1A1410), 0);
     lv_obj_set_style_border_width(esp_modem_page, 0, 0);
     lv_obj_set_style_pad_all(esp_modem_page, 16, 0);
@@ -11701,8 +11475,7 @@ static void show_evil_twin_passwords_page(void)
     
     // Create page
     ctx->evil_twin_passwords_page = lv_obj_create(container);
-    lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(ctx->evil_twin_passwords_page, lv_pct(100), scr_height - 85);
+    lv_obj_set_size(ctx->evil_twin_passwords_page, lv_pct(100), lv_pct(100));
     lv_obj_align(ctx->evil_twin_passwords_page, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(ctx->evil_twin_passwords_page, lv_color_hex(0x1A1A1A), 0);
     lv_obj_set_style_border_width(ctx->evil_twin_passwords_page, 0, 0);
@@ -12396,9 +12169,8 @@ static void show_rogue_ap_page(void)
     // Create rogue AP page
     ctx->rogue_ap_page = lv_obj_create(container);
     rogue_ap_page = ctx->rogue_ap_page;
-    lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(ctx->rogue_ap_page, lv_pct(100), scr_height - 85);
-    lv_obj_align(ctx->rogue_ap_page, LV_ALIGN_TOP_MID, 0, 85);
+    lv_obj_set_size(ctx->rogue_ap_page, lv_pct(100), lv_pct(100));
+    lv_obj_align(ctx->rogue_ap_page, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(ctx->rogue_ap_page, lv_color_hex(0x1A1A1A), 0);
     lv_obj_set_style_border_width(ctx->rogue_ap_page, 0, 0);
     lv_obj_set_style_pad_all(ctx->rogue_ap_page, 15, 0);
@@ -14497,8 +14269,7 @@ static void show_portal_data_page(void)
     
     // Create page
     ctx->portal_data_page = lv_obj_create(container);
-    lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(ctx->portal_data_page, lv_pct(100), scr_height - 85);
+    lv_obj_set_size(ctx->portal_data_page, lv_pct(100), lv_pct(100));
     lv_obj_align(ctx->portal_data_page, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(ctx->portal_data_page, lv_color_hex(0x1A1A1A), 0);
     lv_obj_set_style_border_width(ctx->portal_data_page, 0, 0);
@@ -14681,8 +14452,7 @@ static void show_handshakes_page(void)
     
     // Create page
     ctx->handshakes_page = lv_obj_create(container);
-    lv_coord_t scr_height = lv_disp_get_ver_res(NULL);
-    lv_obj_set_size(ctx->handshakes_page, lv_pct(100), scr_height - 85);
+    lv_obj_set_size(ctx->handshakes_page, lv_pct(100), lv_pct(100));
     lv_obj_align(ctx->handshakes_page, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(ctx->handshakes_page, lv_color_hex(0x1A1A1A), 0);
     lv_obj_set_style_border_width(ctx->handshakes_page, 0, 0);
@@ -17990,6 +17760,9 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to initialize display");
         return;
     }
+
+    // Initialize centralized UI theme/styles once display is ready
+    ui_theme_init(disp);
     
     // Set display brightness from saved setting with gamma correction
     set_brightness_gamma(screen_brightness_setting);
