@@ -1,0 +1,30 @@
+Command: ninja all
+[1/9] Performing build step for 'bootloader'
+[1/1] cd /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader && /Users/macbook/.espressif/python_env/idf6.0_py3.13_env/bin/python /Users/macbook/esp/v6.0/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x2000 /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader/bootloader.bin
+Bootloader binary size 0x5e70 bytes. 0x190 bytes (2%) free.
+[2/9] No install step for 'bootloader'
+[3/9] Completed 'bootloader'
+[4/9] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/main.c.obj
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:944:18: warning: 'rogue_ap_start_btn' defined but not used [-Wunused-variable]
+  944 | static lv_obj_t *rogue_ap_start_btn = NULL;
+      |                  ^~~~~~~~~~~~~~~~~~
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:943:18: warning: 'rogue_ap_html_dropdown' defined but not used [-Wunused-variable]
+  943 | static lv_obj_t *rogue_ap_html_dropdown = NULL;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:942:18: warning: 'rogue_ap_keyboard' defined but not used [-Wunused-variable]
+  942 | static lv_obj_t *rogue_ap_keyboard = NULL;
+      |                  ^~~~~~~~~~~~~~~~~
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:941:18: warning: 'rogue_ap_password_input' defined but not used [-Wunused-variable]
+  941 | static lv_obj_t *rogue_ap_password_input = NULL;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+[5/9] Linking C static library esp-idf/main/libmain.a
+[6/9] Generating esp-idf/esp_system/ld/sections.ld
+[7/9] Linking CXX executable M5MonsterC5-Tab5.elf
+[8/9] Generating binary image from built executable
+esptool v5.1.0
+Creating ESP32P4 image...
+Merged 3 ELF sections.
+Successfully created ESP32P4 image.
+Generated /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/M5MonsterC5-Tab5.bin
+[9/9] cd /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build && /Users/macbook/.espressif/python_env/idf6.0_py3.13_env/bin/python /Users/macbook/esp/v6.0/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/partition_table/partition-table.bin /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/M5MonsterC5-Tab5.bin
+M5MonsterC5-Tab5.bin binary size 0x20be90 bytes. Smallest app partition is 0xa00000 bytes. 0x7f4170 bytes (80%) free.

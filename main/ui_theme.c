@@ -89,8 +89,8 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_init(&s_styles.page);
     lv_style_set_bg_opa(&s_styles.page, LV_OPA_COVER);
     lv_style_set_bg_color(&s_styles.page, s_palette[UI_COLOR_BG]);
-    lv_style_set_bg_grad_color(&s_styles.page, lv_color_mix(s_palette[UI_COLOR_BG_LAYER], s_palette[UI_COLOR_BG], 20));
-    lv_style_set_bg_grad_dir(&s_styles.page, LV_GRAD_DIR_VER);
+    lv_style_set_bg_grad_color(&s_styles.page, s_palette[UI_COLOR_BG]);
+    lv_style_set_bg_grad_dir(&s_styles.page, LV_GRAD_DIR_NONE);
     lv_style_set_border_width(&s_styles.page, 0);
     lv_style_set_pad_all(&s_styles.page, UI_SPACE_16);
     lv_style_set_pad_row(&s_styles.page, UI_SPACE_16);
@@ -126,8 +126,8 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_init(&s_styles.appbar);
     lv_style_set_bg_opa(&s_styles.appbar, 205);
     lv_style_set_bg_color(&s_styles.appbar, s_palette[UI_COLOR_BG_LAYER]);
-    lv_style_set_bg_grad_color(&s_styles.appbar, lv_color_mix(s_palette[UI_COLOR_SURFACE], s_palette[UI_COLOR_BG_LAYER], 31));
-    lv_style_set_bg_grad_dir(&s_styles.appbar, LV_GRAD_DIR_VER);
+    lv_style_set_bg_grad_color(&s_styles.appbar, s_palette[UI_COLOR_BG_LAYER]);
+    lv_style_set_bg_grad_dir(&s_styles.appbar, LV_GRAD_DIR_NONE);
     lv_style_set_border_width(&s_styles.appbar, UI_BORDER_THIN);
     lv_style_set_border_side(&s_styles.appbar, LV_BORDER_SIDE_BOTTOM);
     lv_style_set_border_color(&s_styles.appbar, s_palette[UI_COLOR_BORDER]);
@@ -139,8 +139,8 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_init(&s_styles.tabbar);
     lv_style_set_bg_opa(&s_styles.tabbar, 205);
     lv_style_set_bg_color(&s_styles.tabbar, s_palette[UI_COLOR_BG_LAYER]);
-    lv_style_set_bg_grad_color(&s_styles.tabbar, lv_color_mix(s_palette[UI_COLOR_SURFACE], s_palette[UI_COLOR_BG_LAYER], 31));
-    lv_style_set_bg_grad_dir(&s_styles.tabbar, LV_GRAD_DIR_VER);
+    lv_style_set_bg_grad_color(&s_styles.tabbar, s_palette[UI_COLOR_BG_LAYER]);
+    lv_style_set_bg_grad_dir(&s_styles.tabbar, LV_GRAD_DIR_NONE);
     lv_style_set_border_width(&s_styles.tabbar, UI_BORDER_THIN);
     lv_style_set_border_color(&s_styles.tabbar, s_palette[UI_COLOR_BORDER]);
     lv_style_set_radius(&s_styles.tabbar, 16);

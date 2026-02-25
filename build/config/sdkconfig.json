@@ -1019,7 +1019,7 @@
     "LV_USE_SCALE": true,
     "LV_USE_SDL": false,
     "LV_USE_SLIDER": true,
-    "LV_USE_SNAPSHOT": false,
+    "LV_USE_SNAPSHOT": true,
     "LV_USE_SPAN": true,
     "LV_USE_SPINBOX": true,
     "LV_USE_SPINNER": true,
