@@ -6,6 +6,8 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "priv_include"
     REQUIRES 
         driver 
+        esp_driver_ledc
+        esp_driver_i2s
         esp_lcd
         esp_codec_dev
         esp_lvgl_port

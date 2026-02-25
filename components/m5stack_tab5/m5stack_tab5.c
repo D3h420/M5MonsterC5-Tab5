@@ -7,12 +7,14 @@
 #include "sdkconfig.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_idf_version.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_spiffs.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
+#include "esp_lcd_io_i2c.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_ldo_regulator.h"
 #include "esp_vfs_fat.h"
@@ -1197,7 +1199,11 @@ esp_err_t bsp_display_new_with_handles(const bsp_display_config_t* config, bsp_l
         .virtual_channel    = 0,
         .dpi_clk_src        = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = 60,  // 720*1280 RGB24 60Hz RGB24 // 80,
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+        .in_color_format    = LCD_COLOR_FMT_RGB565,
+#else
         .pixel_format       = LCD_COLOR_PIXEL_FORMAT_RGB565,
+#endif
         .num_fbs            = 1,
         .video_timing =
             {
@@ -1418,7 +1424,11 @@ esp_err_t bsp_display_new_with_handles_to_st7123(const bsp_display_config_t* con
         .virtual_channel    = 0,
         .dpi_clk_src        = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = 70,  // ST7123 DPI clock frequency
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+        .in_color_format    = LCD_COLOR_FMT_RGB565,
+#else
         .pixel_format       = LCD_COLOR_PIXEL_FORMAT_RGB565,
+#endif
         .num_fbs            = 1,
         .video_timing =
             {
@@ -1663,8 +1673,11 @@ static lv_indev_t* bsp_display_indev_init_to_st7123(lv_display_t* disp)
     };
     tp_io_config.scl_speed_hz = CONFIG_BSP_I2C_CLK_SPEED_HZ;
 
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    ret = esp_lcd_new_panel_io_i2c(bsp_i2c_get_handle(), &tp_io_config, &tp_io_handle);
+#else
     ret = esp_lcd_new_panel_io_i2c_v2(bsp_i2c_get_handle(), &tp_io_config, &tp_io_handle);
-    // ret = esp_lcd_new_panel_io_i2c(bsp_i2c_get_handle(), &tp_io_config, &tp_io_handle);
+#endif
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create ST7123 touch I2C IO: %s", esp_err_to_name(ret));
         return NULL;

@@ -6,9 +6,7 @@ dependencies:
   espressif/esp_wifi_remote: "1.2.2"
   espressif/esp_hosted: "2.8.5"
   espressif/iot_usbh_cdc: ^2.0.1
-
-
-
+  espressif/usb: "1.1.0"
 
 
 

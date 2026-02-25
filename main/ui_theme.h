@@ -36,9 +36,9 @@ typedef enum {
     UI_SPACE_24 = 24
 } ui_spacing_t;
 
-#define UI_RADIUS_SM 10
-#define UI_RADIUS_MD 14
-#define UI_RADIUS_LG 18
+#define UI_RADIUS_SM 12
+#define UI_RADIUS_MD 18
+#define UI_RADIUS_LG 24
 #define UI_BORDER_THIN 1
 #define UI_BORDER_THICK 2
 #define UI_TOUCH_TARGET_MIN 48

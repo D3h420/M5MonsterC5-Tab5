@@ -1,0 +1,38 @@
+Command: ninja all
+[1/11] Performing build step for 'bootloader'
+[1/1] cd /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader && /Users/macbook/.espressif/python_env/idf6.0_py3.13_env/bin/python /Users/macbook/esp/v6.0/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x2000 /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader/bootloader.bin
+Bootloader binary size 0x5e70 bytes. 0x190 bytes (2%) free.
+[2/11] No install step for 'bootloader'
+[3/11] Completed 'bootloader'
+[4/11] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/ui_components.c.obj
+[5/11] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/ui_theme.c.obj
+[6/11] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/main.c.obj
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:3124:13: warning: 'screenshot_click_cb' defined but not used [-Wunused-function]
+ 3124 | static void screenshot_click_cb(lv_event_t *e) { (void)e; }
+      |             ^~~~~~~~~~~~~~~~~~~
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:3123:13: warning: 'save_screenshot_to_sd' defined but not used [-Wunused-function]
+ 3123 | static void save_screenshot_to_sd(void) {}
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:913:18: warning: 'rogue_ap_start_btn' defined but not used [-Wunused-variable]
+  913 | static lv_obj_t *rogue_ap_start_btn = NULL;
+      |                  ^~~~~~~~~~~~~~~~~~
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:912:18: warning: 'rogue_ap_html_dropdown' defined but not used [-Wunused-variable]
+  912 | static lv_obj_t *rogue_ap_html_dropdown = NULL;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:911:18: warning: 'rogue_ap_keyboard' defined but not used [-Wunused-variable]
+  911 | static lv_obj_t *rogue_ap_keyboard = NULL;
+      |                  ^~~~~~~~~~~~~~~~~
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/main/main.c:910:18: warning: 'rogue_ap_password_input' defined but not used [-Wunused-variable]
+  910 | static lv_obj_t *rogue_ap_password_input = NULL;
+      |                  ^~~~~~~~~~~~~~~~~~~~~~~
+[7/11] Linking C static library esp-idf/main/libmain.a
+[8/11] Generating esp-idf/esp_system/ld/sections.ld
+[9/11] Linking CXX executable M5MonsterC5-Tab5.elf
+[10/11] Generating binary image from built executable
+esptool v5.1.0
+Creating ESP32P4 image...
+Merged 3 ELF sections.
+Successfully created ESP32P4 image.
+Generated /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/M5MonsterC5-Tab5.bin
+[11/11] cd /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build && /Users/macbook/.espressif/python_env/idf6.0_py3.13_env/bin/python /Users/macbook/esp/v6.0/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/partition_table/partition-table.bin /Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/M5MonsterC5-Tab5.bin
+M5MonsterC5-Tab5.bin binary size 0x208220 bytes. Smallest app partition is 0xa00000 bytes. 0x7f7de0 bytes (80%) free.
