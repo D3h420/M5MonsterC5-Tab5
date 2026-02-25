@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "M5MonsterC5-Tab5",
-    "project_version":    "v1.0.8-6-gd221bbb-dirty",
+    "project_version":    "v1.0.8-7-gc9981cc-dirty",
     "project_path":       "/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT",
     "idf_path":           "/Users/macbook/esp/v6.0/esp-idf",
     "build_dir":          "/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build",
