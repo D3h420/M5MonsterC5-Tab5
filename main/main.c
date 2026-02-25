@@ -213,6 +213,11 @@ typedef struct {
     // =====================================================================
     lv_obj_t *container;           // Main container for this tab
     lv_obj_t *tiles;               // Main tiles
+    lv_obj_t *dashboard_network_value;
+    lv_obj_t *dashboard_selected_value;
+    lv_obj_t *dashboard_scan_value;
+    lv_obj_t *dashboard_transport_label;
+    lv_obj_t *dashboard_portal_label;
     lv_obj_t *current_visible_page;
     
     // =====================================================================
@@ -1091,9 +1096,12 @@ static void show_scan_page(void);
 static void show_observer_page(void);
 static void show_esp_modem_page(void);
 static void show_settings_page(void);
+static void create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ctx);
+static void update_live_dashboard_for_ctx(tab_context_t *ctx);
 static void main_tile_event_cb(lv_event_t *e);
 static void back_btn_event_cb(lv_event_t *e);
 static void network_checkbox_event_cb(lv_event_t *e);
+static void wifi_scan_row_toggle_cb(lv_event_t *e);
 static void attack_tile_event_cb(lv_event_t *e);
 static void create_status_bar(void);
 static void screenshot_click_cb(lv_event_t *e);
@@ -1457,6 +1465,8 @@ static void battery_status_timer_cb(lv_timer_t *timer)
             lv_obj_set_style_text_color(charging_status_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
         }
     }
+
+    update_live_dashboard_for_ctx(get_current_ctx());
 }
 
 // Get screen timeout in milliseconds based on setting
@@ -2451,21 +2461,24 @@ static void wifi_scan_task(void *arg)
             
             // Create list item with horizontal layout (checkbox + text container)
             lv_obj_t *item = lv_obj_create(network_list);
-            lv_obj_set_size(item, lv_pct(100), 92);
+            lv_obj_set_size(item, lv_pct(100), 96);
             ui_theme_apply_list_row(item);
             lv_obj_set_style_bg_color(item, ui_theme_color(UI_COLOR_CARD), 0);
             lv_obj_set_style_bg_grad_color(item, ui_theme_color(UI_COLOR_SURFACE), 0);
             lv_obj_set_style_bg_grad_dir(item, LV_GRAD_DIR_VER, 0);
+            lv_obj_set_style_border_color(item, lv_color_mix(ui_theme_color(UI_COLOR_ACCENT_PRIMARY), ui_theme_color(UI_COLOR_BORDER), LV_OPA_30), LV_STATE_CHECKED);
+            lv_obj_set_style_bg_color(item, lv_color_mix(ui_theme_color(UI_COLOR_ACCENT_PRIMARY), ui_theme_color(UI_COLOR_CARD), LV_OPA_20), LV_STATE_CHECKED);
+            lv_obj_set_style_bg_grad_color(item, lv_color_mix(ui_theme_color(UI_COLOR_ACCENT_SECONDARY), ui_theme_color(UI_COLOR_SURFACE), LV_OPA_20), LV_STATE_CHECKED);
             lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(item, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_set_style_pad_column(item, 12, 0);
-            lv_obj_clear_flag(item, LV_OBJ_FLAG_CLICKABLE);  // Don't steal clicks from checkbox
+            lv_obj_add_flag(item, LV_OBJ_FLAG_CLICKABLE);
             
             // Checkbox (on the left) - explicit size for better touch accuracy
             lv_obj_t *cb = lv_checkbox_create(item);
             lv_checkbox_set_text(cb, "");  // Empty text - we use separate labels
             lv_obj_set_size(cb, 54, 54);  // Explicit size for touch target
-            lv_obj_set_ext_click_area(cb, 15);  // Extend touch area by 15px
+            lv_obj_set_ext_click_area(cb, 8);
             lv_obj_set_style_pad_all(cb, 4, 0);
             lv_obj_set_style_align(cb, LV_ALIGN_LEFT_MID, 0);  // Center vertically in row
             // Style the indicator - dark when unchecked, green when checked
@@ -2476,6 +2489,7 @@ static void wifi_scan_task(void *arg)
             lv_obj_set_style_radius(cb, 10, LV_PART_INDICATOR);
             // Pass 0-based index as user data
             lv_obj_add_event_cb(cb, network_checkbox_event_cb, LV_EVENT_VALUE_CHANGED, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(item, wifi_scan_row_toggle_cb, LV_EVENT_CLICKED, cb);
             
             // Text container (vertical layout for SSID and info)
             lv_obj_t *text_cont = lv_obj_create(item);
@@ -2497,10 +2511,10 @@ static void wifi_scan_task(void *arg)
             lv_obj_set_style_text_font(ssid_label, &lv_font_montserrat_18, 0);
             lv_obj_set_style_text_color(ssid_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
             
-            // BSSID, Band, Security and RSSI
+            // BSSID, Band and Security
             lv_obj_t *info_label = lv_label_create(text_cont);
-            lv_label_set_text_fmt(info_label, "%s  |  %s  |  %s  |  %d dBm", 
-                                  net->bssid, net->band, net->security, net->rssi);
+            lv_label_set_text_fmt(info_label, "%s  |  %s  |  %s", 
+                                  net->bssid, net->band, net->security);
             lv_obj_set_style_text_font(info_label, &lv_font_montserrat_14, 0);
             lv_obj_set_style_text_color(info_label, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
 
@@ -2535,14 +2549,16 @@ static void wifi_scan_task(void *arg)
     hide_scan_overlay();
     
     scan_in_progress = false;
+    update_live_dashboard_for_ctx(get_current_ctx());
     
     // Copy scan results to the tab that initiated the scan (not necessarily current tab!)
-    tab_context_t *ctx = get_ctx_for_tab(scan_tab);
-    if (ctx && ctx->networks) {
-        memcpy(ctx->networks, networks, sizeof(wifi_network_t) * MAX_NETWORKS);
-        ctx->network_count = network_count;
-        memcpy(ctx->selected_indices, selected_network_indices, sizeof(selected_network_indices));
-        ctx->selected_count = selected_network_count;
+    tab_context_t *scan_ctx = get_ctx_for_tab(scan_tab);
+    if (scan_ctx && scan_ctx->networks) {
+        memcpy(scan_ctx->networks, networks, sizeof(wifi_network_t) * MAX_NETWORKS);
+        scan_ctx->network_count = network_count;
+        memcpy(scan_ctx->selected_indices, selected_network_indices, sizeof(selected_network_indices));
+        scan_ctx->selected_count = selected_network_count;
+        scan_ctx->scan_in_progress = false;
         ESP_LOGI(TAG, "[%s] Copied %d scan results to tab %d context", uart_name, network_count, scan_tab);
     }
     
@@ -2796,16 +2812,26 @@ static void show_splash_screen(void)
 // Scan button click handler
 static void scan_btn_click_cb(lv_event_t *e)
 {
+    (void)e;
+
     if (scan_in_progress) {
         ESP_LOGW(TAG, "Scan already in progress");
         return;
     }
     
     scan_in_progress = true;
+    tab_context_t *ctx = get_current_ctx();
+    if (ctx) {
+        ctx->scan_in_progress = true;
+    }
     
     // Clear previous selections
     selected_network_count = 0;
     memset(selected_network_indices, 0, sizeof(selected_network_indices));
+    if (ctx) {
+        ctx->selected_count = 0;
+    }
+    update_live_dashboard_for_ctx(get_current_ctx());
     
     // Disable button during scan
     lv_obj_add_state(scan_btn, LV_STATE_DISABLED);
@@ -2932,9 +2958,9 @@ static lv_obj_t *create_small_tile(lv_obj_t *parent, const char *icon, const cha
         lv_label_set_text(text_label, text);
         lv_obj_set_style_text_font(text_label, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(text_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(text_label, LV_LABEL_LONG_CLIP);
-        lv_obj_set_width(text_label, 94);
+        lv_obj_set_width(text_label, LV_SIZE_CONTENT);
     }
 
     if (callback) {
@@ -2942,6 +2968,173 @@ static lv_obj_t *create_small_tile(lv_obj_t *parent, const char *icon, const cha
     }
 
     return tile;
+}
+
+static lv_obj_t *create_dashboard_stat_card(
+    lv_obj_t *parent,
+    const char *symbol,
+    const char *caption,
+    lv_color_t accent,
+    lv_obj_t **value_out)
+{
+    lv_obj_t *card = lv_obj_create(parent);
+    ui_theme_apply_card(card);
+    lv_obj_set_size(card, 0, lv_pct(100));
+    lv_obj_set_flex_grow(card, 1);
+    lv_obj_set_style_bg_opa(card, LV_OPA_80, 0);
+    lv_obj_set_style_bg_color(card, lv_color_mix(accent, ui_theme_color(UI_COLOR_CARD), LV_OPA_20), 0);
+    lv_obj_set_style_bg_grad_color(card, ui_theme_color(UI_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, lv_color_mix(accent, ui_theme_color(UI_COLOR_BORDER), LV_OPA_50), 0);
+    lv_obj_set_style_radius(card, 16, 0);
+    lv_obj_set_style_shadow_width(card, 10, 0);
+    lv_obj_set_style_shadow_color(card, accent, 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_20, 0);
+    lv_obj_set_style_pad_all(card, 10, 0);
+    lv_obj_set_style_pad_row(card, 4, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *head = lv_obj_create(card);
+    lv_obj_remove_style_all(head);
+    lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(head, 6, 0);
+    lv_obj_clear_flag(head, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *icon_label = lv_label_create(head);
+    lv_label_set_text(icon_label, symbol ? symbol : "");
+    lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(icon_label, accent, 0);
+
+    lv_obj_t *caption_label = lv_label_create(head);
+    lv_label_set_text(caption_label, caption ? caption : "");
+    lv_obj_set_style_text_font(caption_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(caption_label, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
+
+    lv_obj_t *value_label = lv_label_create(card);
+    lv_label_set_text(value_label, "--");
+    lv_obj_set_style_text_font(value_label, &lv_font_montserrat_30, 0);
+    lv_obj_set_style_text_color(value_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    if (value_out) {
+        *value_out = value_label;
+    }
+
+    return card;
+}
+
+static void create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ctx)
+{
+    if (!parent || !ctx) return;
+
+    lv_obj_t *panel = lv_obj_create(parent);
+    ui_theme_apply_section(panel);
+    lv_obj_set_width(panel, lv_pct(100));
+    lv_obj_set_flex_grow(panel, 1);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_80, 0);
+    lv_obj_set_style_bg_color(panel, lv_color_mix(ui_theme_color(UI_COLOR_SURFACE), ui_theme_color(UI_COLOR_BG), LV_OPA_50), 0);
+    lv_obj_set_style_bg_grad_color(panel, ui_theme_color(UI_COLOR_SURFACE_ALT), 0);
+    lv_obj_set_style_bg_grad_dir(panel, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_border_color(panel, lv_color_mix(ui_theme_color(UI_COLOR_ACCENT_PRIMARY), ui_theme_color(UI_COLOR_BORDER), LV_OPA_40), 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_shadow_width(panel, 14, 0);
+    lv_obj_set_style_shadow_opa(panel, LV_OPA_20, 0);
+    lv_obj_set_style_pad_all(panel, 12, 0);
+    lv_obj_set_style_pad_row(panel, 10, 0);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *header = lv_obj_create(panel);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "Live Dashboard");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(title, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    ui_comp_create_status_badge(header, "LIVE", UI_BADGE_INFO);
+
+    lv_obj_t *metrics_row = lv_obj_create(panel);
+    lv_obj_remove_style_all(metrics_row);
+    lv_obj_set_size(metrics_row, lv_pct(100), 0);
+    lv_obj_set_flex_grow(metrics_row, 1);
+    lv_obj_set_flex_flow(metrics_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(metrics_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_column(metrics_row, 8, 0);
+    lv_obj_clear_flag(metrics_row, LV_OBJ_FLAG_CLICKABLE);
+
+    create_dashboard_stat_card(
+        metrics_row,
+        LV_SYMBOL_WIFI,
+        "Networks",
+        ui_theme_color(UI_COLOR_ACCENT_PRIMARY),
+        &ctx->dashboard_network_value);
+
+    create_dashboard_stat_card(
+        metrics_row,
+        LV_SYMBOL_OK,
+        "Selected",
+        ui_theme_color(UI_COLOR_ACCENT_SECONDARY),
+        &ctx->dashboard_selected_value);
+
+    create_dashboard_stat_card(
+        metrics_row,
+        LV_SYMBOL_REFRESH,
+        "Scanner",
+        ui_theme_color(UI_COLOR_WARNING),
+        &ctx->dashboard_scan_value);
+
+    lv_obj_t *meta_row = lv_obj_create(panel);
+    lv_obj_remove_style_all(meta_row);
+    lv_obj_set_size(meta_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(meta_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(meta_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(meta_row, LV_OBJ_FLAG_CLICKABLE);
+
+    ctx->dashboard_transport_label = lv_label_create(meta_row);
+    lv_obj_set_style_text_font(ctx->dashboard_transport_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(ctx->dashboard_transport_label, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
+
+    ctx->dashboard_portal_label = lv_label_create(meta_row);
+    lv_obj_set_style_text_font(ctx->dashboard_portal_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(ctx->dashboard_portal_label, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
+}
+
+static void update_live_dashboard_for_ctx(tab_context_t *ctx)
+{
+    if (!ctx) return;
+
+    bool is_active_tab = (ctx == get_current_ctx());
+    int networks_total = is_active_tab ? network_count : ctx->network_count;
+    int selected_total = is_active_tab ? selected_network_count : ctx->selected_count;
+    bool scanner_busy = is_active_tab ? scan_in_progress : ctx->scan_in_progress;
+    const char *transport = tab_transport_name(tab_id_for_ctx(ctx));
+
+    if (ctx->dashboard_network_value && lv_obj_is_valid(ctx->dashboard_network_value)) {
+        lv_label_set_text_fmt(ctx->dashboard_network_value, "%d", networks_total);
+    }
+    if (ctx->dashboard_selected_value && lv_obj_is_valid(ctx->dashboard_selected_value)) {
+        lv_label_set_text_fmt(ctx->dashboard_selected_value, "%d", selected_total);
+    }
+    if (ctx->dashboard_scan_value && lv_obj_is_valid(ctx->dashboard_scan_value)) {
+        lv_label_set_text(ctx->dashboard_scan_value, scanner_busy ? "ACTIVE" : "IDLE");
+    }
+    if (ctx->dashboard_transport_label && lv_obj_is_valid(ctx->dashboard_transport_label)) {
+        lv_label_set_text_fmt(ctx->dashboard_transport_label, "Transport: %s", transport);
+    }
+    if (ctx->dashboard_portal_label && lv_obj_is_valid(ctx->dashboard_portal_label)) {
+        lv_label_set_text(ctx->dashboard_portal_label, portal_background_mode ? "Portal: ACTIVE" : "Portal: standby");
+    }
 }
 
 // ============================================================================
@@ -3336,6 +3529,7 @@ static void tab_click_cb(lv_event_t *e)
         if (!internal_tiles) {
             show_internal_tiles();
         }
+        update_live_dashboard_for_ctx(new_ctx);
         return;
     }
 
@@ -3348,6 +3542,7 @@ static void tab_click_cb(lv_event_t *e)
             lv_obj_clear_flag(mbus_ctx.tiles, LV_OBJ_FLAG_HIDDEN);
             mbus_ctx.current_visible_page = mbus_ctx.tiles;
         }
+        update_live_dashboard_for_ctx(new_ctx);
         return;
     }
 
@@ -3360,6 +3555,7 @@ static void tab_click_cb(lv_event_t *e)
         lv_obj_clear_flag(new_ctx->tiles, LV_OBJ_FLAG_HIDDEN);
         new_ctx->current_visible_page = new_ctx->tiles;
     }
+    update_live_dashboard_for_ctx(new_ctx);
 }
 
 static void style_tab_container_common(lv_obj_t *container, lv_coord_t height)
@@ -3368,7 +3564,7 @@ static void style_tab_container_common(lv_obj_t *container, lv_coord_t height)
     lv_obj_set_size(container, lv_pct(100), height);
     lv_obj_align(container, LV_ALIGN_TOP_MID, 0, UI_CHROME_HEIGHT);
     lv_obj_set_style_bg_color(container, UI_SURFACE_0, 0);
-    lv_obj_set_style_bg_grad_color(container, UI_SURFACE_1, 0);
+    lv_obj_set_style_bg_grad_color(container, lv_color_mix(UI_SURFACE_1, UI_SURFACE_0, LV_OPA_30), 0);
     lv_obj_set_style_bg_grad_dir(container, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_border_width(container, 0, 0);
     lv_obj_set_style_radius(container, 0, 0);
@@ -3623,6 +3819,7 @@ static void network_checkbox_event_cb(lv_event_t *e)
     lv_obj_t *cb = lv_event_get_target(e);
     int index = (int)(intptr_t)lv_event_get_user_data(e);  // 0-based index
     bool checked = lv_obj_has_state(cb, LV_STATE_CHECKED);
+    lv_obj_t *row = lv_obj_get_parent(cb);
     
     if (checked) {
         // Add to selected list if not already present and not full
@@ -3651,6 +3848,34 @@ static void network_checkbox_event_cb(lv_event_t *e)
             }
         }
     }
+
+    if (row) {
+        if (checked) {
+            lv_obj_add_state(row, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(row, LV_STATE_CHECKED);
+        }
+    }
+
+    tab_context_t *ctx = get_current_ctx();
+    if (ctx) {
+        ctx->selected_count = selected_network_count;
+    }
+
+    update_live_dashboard_for_ctx(ctx);
+}
+
+static void wifi_scan_row_toggle_cb(lv_event_t *e)
+{
+    lv_obj_t *checkbox = (lv_obj_t *)lv_event_get_user_data(e);
+    if (!checkbox) return;
+
+    if (lv_obj_has_state(checkbox, LV_STATE_CHECKED)) {
+        lv_obj_clear_state(checkbox, LV_STATE_CHECKED);
+    } else {
+        lv_obj_add_state(checkbox, LV_STATE_CHECKED);
+    }
+    lv_obj_send_event(checkbox, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
 // Attack tile event handler for bottom icon bar
@@ -6673,11 +6898,14 @@ static void back_btn_event_cb(lv_event_t *e)
 }
 
 // Create tiles for UART tabs inside given container
-static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles_ptr)
+static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles_ptr, tab_context_t *ctx)
 {
+    if (!ctx) return;
+
     if (*tiles_ptr) {
         // Tiles already exist, just show them
         lv_obj_clear_flag(*tiles_ptr, LV_OBJ_FLAG_HIDDEN);
+        update_live_dashboard_for_ctx(ctx);
         return;
     }
     
@@ -6686,28 +6914,52 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
     lv_obj_align(*tiles_ptr, LV_ALIGN_TOP_MID, 0, 0);
     ui_theme_apply_page(*tiles_ptr);
     lv_obj_set_style_bg_color(*tiles_ptr, UI_SURFACE_0, 0);
-    lv_obj_set_style_bg_grad_color(*tiles_ptr, UI_SURFACE_1, 0);
+    lv_obj_set_style_bg_grad_color(*tiles_ptr, lv_color_mix(UI_SURFACE_1, UI_SURFACE_0, LV_OPA_30), 0);
     lv_obj_set_style_bg_grad_dir(*tiles_ptr, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_pad_all(*tiles_ptr, 18, 0);
-    lv_obj_set_style_pad_column(*tiles_ptr, 14, 0);
+    lv_obj_set_style_pad_column(*tiles_ptr, 0, 0);
     lv_obj_set_style_pad_row(*tiles_ptr, 14, 0);
-    lv_obj_set_flex_flow(*tiles_ptr, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(*tiles_ptr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_flow(*tiles_ptr, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(*tiles_ptr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(*tiles_ptr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *tiles_grid = lv_obj_create(*tiles_ptr);
+    lv_obj_remove_style_all(tiles_grid);
+    lv_obj_set_size(tiles_grid, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(tiles_grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(tiles_grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_column(tiles_grid, 12, 0);
+    lv_obj_set_style_pad_row(tiles_grid, 12, 0);
+    lv_obj_clear_flag(tiles_grid, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(tiles_grid, LV_OBJ_FLAG_SCROLLABLE);
+
+    int tile_columns = (lv_disp_get_hor_res(NULL) >= 700) ? 3 : 2;
+    lv_coord_t tile_width_pct = (tile_columns == 3) ? 32 : 48;
+    lv_coord_t tile_height = (tile_columns == 3) ? 170 : 184;
     
     // Create 7 tiles for device tabs (same for Grove, USB, MBus)
     // Use "Test" instead of "Attack" when Red Team is disabled
-    create_tile(*tiles_ptr, LV_SYMBOL_WIFI, 
+    lv_obj_t *tile = create_tile(tiles_grid, LV_SYMBOL_WIFI, 
         enable_red_team ? "WiFi Scan\n& Attack" : "WiFi Scan\n& Test", 
         COLOR_MATERIAL_BLUE, main_tile_event_cb, "WiFi Scan & Attack");
-    create_tile(*tiles_ptr, LV_SYMBOL_WARNING, 
+    lv_obj_set_size(tile, lv_pct(tile_width_pct), tile_height);
+    tile = create_tile(tiles_grid, LV_SYMBOL_WARNING, 
         enable_red_team ? "Global WiFi\nAttacks" : "Global WiFi\nTests", 
         COLOR_MATERIAL_RED, main_tile_event_cb, "Global WiFi Attacks");
-    create_tile(*tiles_ptr, LV_SYMBOL_SAVE, "Compromised\nData", COLOR_MATERIAL_GREEN, main_tile_event_cb, "Compromised Data");
-    create_tile(*tiles_ptr, LV_SYMBOL_EYE_OPEN, "Deauth\nDetector", COLOR_MATERIAL_AMBER, main_tile_event_cb, "Deauth Detector");
-    create_tile(*tiles_ptr, LV_SYMBOL_BLUETOOTH, "Bluetooth", COLOR_MATERIAL_CYAN, main_tile_event_cb, "Bluetooth");
-    create_tile(*tiles_ptr, LV_SYMBOL_LOOP, "Network\nObserver", COLOR_MATERIAL_TEAL, main_tile_event_cb, "Network Observer");
-    create_tile(*tiles_ptr, LV_SYMBOL_WIFI, "Karma", COLOR_MATERIAL_ORANGE, main_tile_event_cb, "Karma");
+    lv_obj_set_size(tile, lv_pct(tile_width_pct), tile_height);
+    tile = create_tile(tiles_grid, LV_SYMBOL_SAVE, "Compromised\nData", COLOR_MATERIAL_GREEN, main_tile_event_cb, "Compromised Data");
+    lv_obj_set_size(tile, lv_pct(tile_width_pct), tile_height);
+    tile = create_tile(tiles_grid, LV_SYMBOL_EYE_OPEN, "Deauth\nDetector", COLOR_MATERIAL_AMBER, main_tile_event_cb, "Deauth Detector");
+    lv_obj_set_size(tile, lv_pct(tile_width_pct), tile_height);
+    tile = create_tile(tiles_grid, LV_SYMBOL_BLUETOOTH, "Bluetooth", COLOR_MATERIAL_CYAN, main_tile_event_cb, "Bluetooth");
+    lv_obj_set_size(tile, lv_pct(tile_width_pct), tile_height);
+    tile = create_tile(tiles_grid, LV_SYMBOL_LOOP, "Network\nObserver", COLOR_MATERIAL_TEAL, main_tile_event_cb, "Network Observer");
+    lv_obj_set_size(tile, lv_pct(tile_width_pct), tile_height);
+    tile = create_tile(tiles_grid, LV_SYMBOL_WIFI, "Karma", COLOR_MATERIAL_ORANGE, main_tile_event_cb, "Karma");
+    lv_obj_set_size(tile, lv_pct(tile_width_pct), tile_height);
+
+    create_live_dashboard_panel(*tiles_ptr, ctx);
+    update_live_dashboard_for_ctx(ctx);
     
     // Ensure tiles are visible after creation (fixes initial display issue)
     lv_obj_clear_flag(*tiles_ptr, LV_OBJ_FLAG_HIDDEN);
@@ -6731,7 +6983,7 @@ static void show_uart1_tiles(void)
     if (ctx->global_attacks_page) lv_obj_add_flag(ctx->global_attacks_page, LV_OBJ_FLAG_HIDDEN);
     if (ctx->karma_page) lv_obj_add_flag(ctx->karma_page, LV_OBJ_FLAG_HIDDEN);
     
-    create_uart_tiles_in_container(container, &ctx->tiles);
+    create_uart_tiles_in_container(container, &ctx->tiles, ctx);
     ctx->current_visible_page = ctx->tiles;
 }
 
@@ -6752,7 +7004,7 @@ static void show_mbus_tiles(void)
     if (ctx->global_attacks_page) lv_obj_add_flag(ctx->global_attacks_page, LV_OBJ_FLAG_HIDDEN);
     if (ctx->karma_page) lv_obj_add_flag(ctx->karma_page, LV_OBJ_FLAG_HIDDEN);
     
-    create_uart_tiles_in_container(mbus_container, &ctx->tiles);
+    create_uart_tiles_in_container(mbus_container, &ctx->tiles, ctx);
     ctx->current_visible_page = ctx->tiles;
 }
 
@@ -6786,6 +7038,7 @@ static void show_internal_tiles(void)
     if (internal_tiles) {
         // Already exists, just show it
         lv_obj_clear_flag(internal_tiles, LV_OBJ_FLAG_HIDDEN);
+        update_live_dashboard_for_ctx(&internal_ctx);
         return;
     }
     
@@ -6795,18 +7048,33 @@ static void show_internal_tiles(void)
     lv_obj_align(internal_tiles, LV_ALIGN_TOP_MID, 0, 0);
     ui_theme_apply_page(internal_tiles);
     lv_obj_set_style_bg_color(internal_tiles, UI_SURFACE_0, 0);
-    lv_obj_set_style_bg_grad_color(internal_tiles, UI_SURFACE_1, 0);
+    lv_obj_set_style_bg_grad_color(internal_tiles, lv_color_mix(UI_SURFACE_1, UI_SURFACE_0, LV_OPA_30), 0);
     lv_obj_set_style_bg_grad_dir(internal_tiles, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_pad_all(internal_tiles, 18, 0);
-    lv_obj_set_style_pad_column(internal_tiles, 14, 0);
+    lv_obj_set_style_pad_column(internal_tiles, 0, 0);
     lv_obj_set_style_pad_row(internal_tiles, 14, 0);
-    lv_obj_set_flex_flow(internal_tiles, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(internal_tiles, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_flow(internal_tiles, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(internal_tiles, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(internal_tiles, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *tiles_grid = lv_obj_create(internal_tiles);
+    lv_obj_remove_style_all(tiles_grid);
+    lv_obj_set_size(tiles_grid, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(tiles_grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(tiles_grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_column(tiles_grid, 12, 0);
+    lv_obj_set_style_pad_row(tiles_grid, 12, 0);
+    lv_obj_clear_flag(tiles_grid, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(tiles_grid, LV_OBJ_FLAG_SCROLLABLE);
     
     // Create 2 tiles for INTERNAL tab
-    create_tile(internal_tiles, LV_SYMBOL_SETTINGS, "Settings", COLOR_MATERIAL_PURPLE, internal_tile_event_cb, "Settings");
-    create_tile(internal_tiles, LV_SYMBOL_WIFI, "Ad Hoc\nPortal & Karma", COLOR_MATERIAL_ORANGE, internal_tile_event_cb, "Ad Hoc Portal");
+    lv_obj_t *settings_tile = create_tile(tiles_grid, LV_SYMBOL_SETTINGS, "Settings", COLOR_MATERIAL_PURPLE, internal_tile_event_cb, "Settings");
+    lv_obj_set_size(settings_tile, lv_pct(48), 182);
+    lv_obj_t *portal_tile = create_tile(tiles_grid, LV_SYMBOL_WIFI, "Ad Hoc\nPortal & Karma", COLOR_MATERIAL_ORANGE, internal_tile_event_cb, "Ad Hoc Portal");
+    lv_obj_set_size(portal_tile, lv_pct(48), 182);
+
+    create_live_dashboard_panel(internal_tiles, &internal_ctx);
+    update_live_dashboard_for_ctx(&internal_ctx);
     
     // Ensure tiles are visible after creation (fixes initial display issue)
     lv_obj_clear_flag(internal_tiles, LV_OBJ_FLAG_HIDDEN);
@@ -6823,7 +7091,7 @@ static void show_main_tiles(void)
 
     // Set dark dashboard background
     lv_obj_set_style_bg_color(scr, ui_theme_color(UI_COLOR_BG), 0);
-    lv_obj_set_style_bg_grad_color(scr, ui_theme_color(UI_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_grad_color(scr, lv_color_mix(ui_theme_color(UI_COLOR_BG_LAYER), ui_theme_color(UI_COLOR_BG), LV_OPA_30), 0);
     lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
     
     // Create status bar and tab bar
@@ -6876,6 +7144,8 @@ static void show_main_tiles(void)
     } else {
         show_uart1_tiles();
     }
+
+    update_live_dashboard_for_ctx(get_current_ctx());
 }
 
 // Show WiFi Scanner page with Back button (inside current tab's container)
@@ -6897,6 +7167,7 @@ static void show_scan_page(void)
     if (ctx->scan_page) {
         lv_obj_clear_flag(ctx->scan_page, LV_OBJ_FLAG_HIDDEN);
         ctx->current_visible_page = ctx->scan_page;
+        update_live_dashboard_for_ctx(ctx);
         ESP_LOGI(TAG, "Showing existing scan page for tab %d", current_tab);
         return;
     }
@@ -6909,7 +7180,7 @@ static void show_scan_page(void)
     lv_obj_set_size(scan_page, lv_pct(100), lv_pct(100));
     ui_theme_apply_page(scan_page);
     lv_obj_set_style_bg_color(scan_page, ui_theme_color(UI_COLOR_BG), 0);
-    lv_obj_set_style_bg_grad_color(scan_page, ui_theme_color(UI_COLOR_BG_LAYER), 0);
+    lv_obj_set_style_bg_grad_color(scan_page, lv_color_mix(ui_theme_color(UI_COLOR_BG_LAYER), ui_theme_color(UI_COLOR_BG), LV_OPA_30), 0);
     lv_obj_set_style_bg_grad_dir(scan_page, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_pad_all(scan_page, 14, 0);
     lv_obj_set_flex_flow(scan_page, LV_FLEX_FLOW_COLUMN);
@@ -6947,9 +7218,11 @@ static void show_scan_page(void)
     lv_obj_set_width(network_list, lv_pct(100));
     lv_obj_set_flex_grow(network_list, 1);
     ui_theme_apply_section(network_list);
+    lv_obj_set_style_bg_opa(network_list, LV_OPA_80, 0);
     lv_obj_set_style_bg_color(network_list, ui_theme_color(UI_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_grad_color(network_list, ui_theme_color(UI_COLOR_SURFACE_ALT), 0);
     lv_obj_set_style_bg_grad_dir(network_list, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_border_color(network_list, lv_color_mix(ui_theme_color(UI_COLOR_ACCENT_PRIMARY), ui_theme_color(UI_COLOR_BORDER), LV_OPA_30), 0);
     lv_obj_set_style_pad_all(network_list, 10, 0);
     lv_obj_set_flex_flow(network_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(network_list, 10, 0);
@@ -6957,29 +7230,44 @@ static void show_scan_page(void)
 
     // Bottom icon bar for attack tiles
     lv_obj_t *attack_bar = lv_obj_create(scan_page);
-    lv_obj_set_size(attack_bar, lv_pct(100), 142);
+    lv_obj_set_size(attack_bar, lv_pct(100), 152);
     ui_theme_apply_card(attack_bar);
     lv_obj_set_style_bg_opa(attack_bar, LV_OPA_70, 0);
+    lv_obj_set_style_bg_color(attack_bar, ui_theme_color(UI_COLOR_CARD), 0);
     lv_obj_set_style_bg_grad_color(attack_bar, ui_theme_color(UI_COLOR_SURFACE), 0);
+    lv_obj_set_style_border_color(attack_bar, lv_color_mix(ui_theme_color(UI_COLOR_ACCENT_PRIMARY), ui_theme_color(UI_COLOR_BORDER), LV_OPA_40), 0);
     lv_obj_set_style_pad_all(attack_bar, 10, 0);
     lv_obj_set_style_pad_column(attack_bar, 10, 0);
     lv_obj_set_style_pad_row(attack_bar, 10, 0);
     lv_obj_set_flex_flow(attack_bar, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(attack_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(attack_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(attack_bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    int action_count = enable_red_team ? 6 : 1;
+    int action_columns = (action_count >= 5) ? 3 : ((action_count >= 3) ? 2 : 1);
+    lv_coord_t attack_inner_width = lv_disp_get_hor_res(NULL) - 60;
+    lv_coord_t attack_btn_width = (attack_inner_width - ((action_columns - 1) * 10)) / action_columns;
+    if (attack_btn_width < 132) attack_btn_width = 132;
+    lv_coord_t attack_btn_height = 60;
     
     // Create attack tiles in the bottom bar (some only visible when Red Team enabled)
     if (enable_red_team) {
-        create_small_tile(attack_bar, LV_SYMBOL_CHARGE, "Deauth", COLOR_MATERIAL_RED, attack_tile_event_cb, "Deauth");
-        create_small_tile(attack_bar, LV_SYMBOL_WARNING, "EvilTwin", COLOR_MATERIAL_ORANGE, attack_tile_event_cb, "Evil Twin");
-        create_small_tile(attack_bar, LV_SYMBOL_POWER, "SAE", COLOR_MATERIAL_PINK, attack_tile_event_cb, "SAE Overflow");
-        create_small_tile(attack_bar, LV_SYMBOL_DOWNLOAD, "Handshake", COLOR_MATERIAL_AMBER, attack_tile_event_cb, "Handshaker");
+        lv_obj_t *btn = create_small_tile(attack_bar, LV_SYMBOL_CHARGE, "Deauth", COLOR_MATERIAL_RED, attack_tile_event_cb, "Deauth");
+        lv_obj_set_size(btn, attack_btn_width, attack_btn_height);
+        btn = create_small_tile(attack_bar, LV_SYMBOL_WARNING, "EvilTwin", COLOR_MATERIAL_ORANGE, attack_tile_event_cb, "Evil Twin");
+        lv_obj_set_size(btn, attack_btn_width, attack_btn_height);
+        btn = create_small_tile(attack_bar, LV_SYMBOL_POWER, "SAE", COLOR_MATERIAL_PINK, attack_tile_event_cb, "SAE Overflow");
+        lv_obj_set_size(btn, attack_btn_width, attack_btn_height);
+        btn = create_small_tile(attack_bar, LV_SYMBOL_DOWNLOAD, "Handshake", COLOR_MATERIAL_AMBER, attack_tile_event_cb, "Handshaker");
+        lv_obj_set_size(btn, attack_btn_width, attack_btn_height);
     }
     // ARP tile always visible (but poisoning blocked when Red Team disabled)
-    create_small_tile(attack_bar, LV_SYMBOL_SHUFFLE, "ARP", COLOR_MATERIAL_PURPLE, attack_tile_event_cb, "ARP Poison");
+    lv_obj_t *arp_btn = create_small_tile(attack_bar, LV_SYMBOL_SHUFFLE, "ARP", COLOR_MATERIAL_PURPLE, attack_tile_event_cb, "ARP Poison");
+    lv_obj_set_size(arp_btn, attack_btn_width, attack_btn_height);
     // Rogue AP tile (always visible when Red Team enabled)
     if (enable_red_team) {
-        create_small_tile(attack_bar, LV_SYMBOL_WIFI, "RogueAP", COLOR_MATERIAL_CYAN, attack_tile_event_cb, "Rogue AP");
+        lv_obj_t *rogue_btn = create_small_tile(attack_bar, LV_SYMBOL_WIFI, "RogueAP", COLOR_MATERIAL_CYAN, attack_tile_event_cb, "Rogue AP");
+        lv_obj_set_size(rogue_btn, attack_btn_width, attack_btn_height);
     }
     
     // Auto-start scan when entering the page
@@ -16714,6 +17002,8 @@ static void update_portal_icon(void)
     } else {
         lv_obj_add_flag(portal_icon, LV_OBJ_FLAG_HIDDEN);
     }
+
+    update_live_dashboard_for_ctx(get_current_ctx());
 }
 
 
@@ -17118,6 +17408,11 @@ static void invalidate_red_team_dependent_pages(void)
         if (ctx->tiles) {
             lv_obj_del(ctx->tiles);
             ctx->tiles = NULL;
+            ctx->dashboard_network_value = NULL;
+            ctx->dashboard_selected_value = NULL;
+            ctx->dashboard_scan_value = NULL;
+            ctx->dashboard_transport_label = NULL;
+            ctx->dashboard_portal_label = NULL;
         }
     }
     

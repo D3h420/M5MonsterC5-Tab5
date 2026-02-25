@@ -3,21 +3,21 @@
 static bool s_theme_inited = false;
 
 static lv_color_t s_palette[UI_COLOR_COUNT] = {
-    [UI_COLOR_BG] = LV_COLOR_MAKE(0x04, 0x08, 0x10),
-    [UI_COLOR_BG_LAYER] = LV_COLOR_MAKE(0x0A, 0x12, 0x20),
-    [UI_COLOR_SURFACE] = LV_COLOR_MAKE(0x11, 0x1D, 0x31),
-    [UI_COLOR_SURFACE_ALT] = LV_COLOR_MAKE(0x18, 0x26, 0x40),
-    [UI_COLOR_CARD] = LV_COLOR_MAKE(0x15, 0x24, 0x3B),
-    [UI_COLOR_BORDER] = LV_COLOR_MAKE(0x2D, 0x42, 0x63),
+    [UI_COLOR_BG] = LV_COLOR_MAKE(0x07, 0x0B, 0x14),
+    [UI_COLOR_BG_LAYER] = LV_COLOR_MAKE(0x0B, 0x12, 0x20),
+    [UI_COLOR_SURFACE] = LV_COLOR_MAKE(0x13, 0x1C, 0x2E),
+    [UI_COLOR_SURFACE_ALT] = LV_COLOR_MAKE(0x17, 0x24, 0x39),
+    [UI_COLOR_CARD] = LV_COLOR_MAKE(0x15, 0x21, 0x34),
+    [UI_COLOR_BORDER] = LV_COLOR_MAKE(0x34, 0x4D, 0x73),
     [UI_COLOR_TEXT_PRIMARY] = LV_COLOR_MAKE(0xF3, 0xF7, 0xFF),
-    [UI_COLOR_TEXT_SECONDARY] = LV_COLOR_MAKE(0xC9, 0xD5, 0xE8),
-    [UI_COLOR_TEXT_MUTED] = LV_COLOR_MAKE(0x90, 0xA2, 0xBD),
-    [UI_COLOR_ACCENT_PRIMARY] = LV_COLOR_MAKE(0x4F, 0x87, 0xFF),
-    [UI_COLOR_ACCENT_SECONDARY] = LV_COLOR_MAKE(0x25, 0xD7, 0xC3),
-    [UI_COLOR_SUCCESS] = LV_COLOR_MAKE(0x48, 0xDA, 0x89),
+    [UI_COLOR_TEXT_SECONDARY] = LV_COLOR_MAKE(0xCC, 0xD8, 0xEC),
+    [UI_COLOR_TEXT_MUTED] = LV_COLOR_MAKE(0x93, 0xA6, 0xC3),
+    [UI_COLOR_ACCENT_PRIMARY] = LV_COLOR_MAKE(0x4E, 0xA8, 0xFF),
+    [UI_COLOR_ACCENT_SECONDARY] = LV_COLOR_MAKE(0x35, 0xD9, 0xC7),
+    [UI_COLOR_SUCCESS] = LV_COLOR_MAKE(0x52, 0xD8, 0x98),
     [UI_COLOR_WARNING] = LV_COLOR_MAKE(0xFF, 0xB3, 0x47),
-    [UI_COLOR_ERROR] = LV_COLOR_MAKE(0xFF, 0x5E, 0x7D),
-    [UI_COLOR_INFO] = LV_COLOR_MAKE(0x7B, 0xB8, 0xFF),
+    [UI_COLOR_ERROR] = LV_COLOR_MAKE(0xFF, 0x63, 0x87),
+    [UI_COLOR_INFO] = LV_COLOR_MAKE(0x81, 0xBE, 0xFF),
     [UI_COLOR_MODAL_OVERLAY] = LV_COLOR_MAKE(0x00, 0x00, 0x00),
 };
 
@@ -38,11 +38,11 @@ static void init_button_style(lv_style_t *style, lv_color_t bg, lv_color_t borde
     lv_style_init(style);
     lv_style_set_bg_opa(style, LV_OPA_COVER);
     lv_style_set_bg_color(style, bg);
-    lv_style_set_bg_grad_color(style, lv_color_lighten(bg, 8));
+    lv_style_set_bg_grad_color(style, lv_color_lighten(bg, 4));
     lv_style_set_bg_grad_dir(style, LV_GRAD_DIR_VER);
     lv_style_set_border_width(style, UI_BORDER_THIN);
     lv_style_set_border_color(style, border);
-    lv_style_set_radius(style, UI_RADIUS_LG);
+    lv_style_set_radius(style, 20);
     lv_style_set_pad_left(style, UI_SPACE_16);
     lv_style_set_pad_right(style, UI_SPACE_16);
     lv_style_set_pad_top(style, UI_SPACE_12);
@@ -51,8 +51,8 @@ static void init_button_style(lv_style_t *style, lv_color_t bg, lv_color_t borde
     lv_style_set_text_color(style, text);
     lv_style_set_text_font(style, &lv_font_montserrat_20);
     lv_style_set_shadow_color(style, border);
-    lv_style_set_shadow_width(style, 18);
-    lv_style_set_shadow_opa(style, LV_OPA_30);
+    lv_style_set_shadow_width(style, 14);
+    lv_style_set_shadow_opa(style, LV_OPA_20);
     lv_style_set_transition(style, &s_button_transition);
 }
 
@@ -89,44 +89,44 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_init(&s_styles.page);
     lv_style_set_bg_opa(&s_styles.page, LV_OPA_COVER);
     lv_style_set_bg_color(&s_styles.page, s_palette[UI_COLOR_BG]);
-    lv_style_set_bg_grad_color(&s_styles.page, s_palette[UI_COLOR_BG_LAYER]);
+    lv_style_set_bg_grad_color(&s_styles.page, lv_color_mix(s_palette[UI_COLOR_BG_LAYER], s_palette[UI_COLOR_BG], LV_OPA_20));
     lv_style_set_bg_grad_dir(&s_styles.page, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.page, 0);
     lv_style_set_pad_all(&s_styles.page, UI_SPACE_16);
     lv_style_set_pad_row(&s_styles.page, UI_SPACE_16);
 
     lv_style_init(&s_styles.card);
-    lv_style_set_bg_opa(&s_styles.card, LV_OPA_COVER);
+    lv_style_set_bg_opa(&s_styles.card, 220);
     lv_style_set_bg_color(&s_styles.card, s_palette[UI_COLOR_CARD]);
-    lv_style_set_bg_grad_color(&s_styles.card, lv_color_darken(s_palette[UI_COLOR_CARD], 6));
+    lv_style_set_bg_grad_color(&s_styles.card, lv_color_lighten(s_palette[UI_COLOR_CARD], 4));
     lv_style_set_bg_grad_dir(&s_styles.card, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.card, UI_BORDER_THIN);
-    lv_style_set_border_color(&s_styles.card, s_palette[UI_COLOR_BORDER]);
+    lv_style_set_border_color(&s_styles.card, lv_color_mix(s_palette[UI_COLOR_BORDER], s_palette[UI_COLOR_ACCENT_PRIMARY], LV_OPA_20));
     lv_style_set_radius(&s_styles.card, UI_RADIUS_LG);
     lv_style_set_pad_all(&s_styles.card, UI_SPACE_12);
     lv_style_set_pad_row(&s_styles.card, UI_SPACE_8);
-    lv_style_set_shadow_width(&s_styles.card, 14);
-    lv_style_set_shadow_color(&s_styles.card, lv_color_darken(s_palette[UI_COLOR_BG], 10));
-    lv_style_set_shadow_opa(&s_styles.card, LV_OPA_20);
+    lv_style_set_shadow_width(&s_styles.card, 10);
+    lv_style_set_shadow_color(&s_styles.card, lv_color_darken(s_palette[UI_COLOR_BG], 6));
+    lv_style_set_shadow_opa(&s_styles.card, LV_OPA_30);
 
     lv_style_init(&s_styles.section);
-    lv_style_set_bg_opa(&s_styles.section, LV_OPA_COVER);
+    lv_style_set_bg_opa(&s_styles.section, 210);
     lv_style_set_bg_color(&s_styles.section, s_palette[UI_COLOR_SURFACE]);
-    lv_style_set_bg_grad_color(&s_styles.section, s_palette[UI_COLOR_SURFACE_ALT]);
+    lv_style_set_bg_grad_color(&s_styles.section, lv_color_lighten(s_palette[UI_COLOR_SURFACE_ALT], 3));
     lv_style_set_bg_grad_dir(&s_styles.section, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.section, UI_BORDER_THIN);
-    lv_style_set_border_color(&s_styles.section, s_palette[UI_COLOR_BORDER]);
+    lv_style_set_border_color(&s_styles.section, lv_color_mix(s_palette[UI_COLOR_BORDER], s_palette[UI_COLOR_ACCENT_PRIMARY], LV_OPA_20));
     lv_style_set_radius(&s_styles.section, 20);
     lv_style_set_pad_all(&s_styles.section, UI_SPACE_16);
     lv_style_set_pad_row(&s_styles.section, UI_SPACE_12);
-    lv_style_set_shadow_width(&s_styles.section, 16);
+    lv_style_set_shadow_width(&s_styles.section, 12);
     lv_style_set_shadow_color(&s_styles.section, lv_color_darken(s_palette[UI_COLOR_BG_LAYER], 8));
-    lv_style_set_shadow_opa(&s_styles.section, LV_OPA_20);
+    lv_style_set_shadow_opa(&s_styles.section, LV_OPA_30);
 
     lv_style_init(&s_styles.appbar);
-    lv_style_set_bg_opa(&s_styles.appbar, LV_OPA_90);
+    lv_style_set_bg_opa(&s_styles.appbar, 205);
     lv_style_set_bg_color(&s_styles.appbar, s_palette[UI_COLOR_BG_LAYER]);
-    lv_style_set_bg_grad_color(&s_styles.appbar, s_palette[UI_COLOR_SURFACE]);
+    lv_style_set_bg_grad_color(&s_styles.appbar, lv_color_mix(s_palette[UI_COLOR_SURFACE], s_palette[UI_COLOR_BG_LAYER], LV_OPA_30));
     lv_style_set_bg_grad_dir(&s_styles.appbar, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.appbar, UI_BORDER_THIN);
     lv_style_set_border_side(&s_styles.appbar, LV_BORDER_SIDE_BOTTOM);
@@ -137,9 +137,9 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_set_pad_bottom(&s_styles.appbar, UI_SPACE_8);
 
     lv_style_init(&s_styles.tabbar);
-    lv_style_set_bg_opa(&s_styles.tabbar, LV_OPA_90);
+    lv_style_set_bg_opa(&s_styles.tabbar, 205);
     lv_style_set_bg_color(&s_styles.tabbar, s_palette[UI_COLOR_BG_LAYER]);
-    lv_style_set_bg_grad_color(&s_styles.tabbar, s_palette[UI_COLOR_SURFACE]);
+    lv_style_set_bg_grad_color(&s_styles.tabbar, lv_color_mix(s_palette[UI_COLOR_SURFACE], s_palette[UI_COLOR_BG_LAYER], LV_OPA_30));
     lv_style_set_bg_grad_dir(&s_styles.tabbar, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.tabbar, UI_BORDER_THIN);
     lv_style_set_border_color(&s_styles.tabbar, s_palette[UI_COLOR_BORDER]);
@@ -182,13 +182,13 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_init(&s_styles.icon_button);
     lv_style_set_bg_opa(&s_styles.icon_button, LV_OPA_COVER);
     lv_style_set_bg_color(&s_styles.icon_button, s_palette[UI_COLOR_SURFACE]);
-    lv_style_set_bg_grad_color(&s_styles.icon_button, s_palette[UI_COLOR_SURFACE_ALT]);
+    lv_style_set_bg_grad_color(&s_styles.icon_button, lv_color_lighten(s_palette[UI_COLOR_SURFACE_ALT], 3));
     lv_style_set_bg_grad_dir(&s_styles.icon_button, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.icon_button, UI_BORDER_THIN);
     lv_style_set_border_color(&s_styles.icon_button, s_palette[UI_COLOR_BORDER]);
     lv_style_set_radius(&s_styles.icon_button, 16);
     lv_style_set_pad_all(&s_styles.icon_button, UI_SPACE_12);
-    lv_style_set_shadow_width(&s_styles.icon_button, 10);
+    lv_style_set_shadow_width(&s_styles.icon_button, 8);
     lv_style_set_shadow_color(&s_styles.icon_button, s_palette[UI_COLOR_ACCENT_PRIMARY]);
     lv_style_set_shadow_opa(&s_styles.icon_button, LV_OPA_20);
     lv_style_set_transition(&s_styles.icon_button, &s_button_transition);
@@ -207,9 +207,9 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_set_text_font(&s_styles.chip, &lv_font_montserrat_12);
 
     lv_style_init(&s_styles.metric_card);
-    lv_style_set_bg_opa(&s_styles.metric_card, LV_OPA_COVER);
+    lv_style_set_bg_opa(&s_styles.metric_card, 220);
     lv_style_set_bg_color(&s_styles.metric_card, s_palette[UI_COLOR_SURFACE]);
-    lv_style_set_bg_grad_color(&s_styles.metric_card, s_palette[UI_COLOR_SURFACE_ALT]);
+    lv_style_set_bg_grad_color(&s_styles.metric_card, lv_color_lighten(s_palette[UI_COLOR_SURFACE_ALT], 3));
     lv_style_set_bg_grad_dir(&s_styles.metric_card, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.metric_card, UI_BORDER_THIN);
     lv_style_set_border_color(&s_styles.metric_card, s_palette[UI_COLOR_BORDER]);
@@ -217,20 +217,20 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_set_pad_all(&s_styles.metric_card, UI_SPACE_12);
     lv_style_set_pad_row(&s_styles.metric_card, UI_SPACE_12);
     lv_style_set_shadow_color(&s_styles.metric_card, s_palette[UI_COLOR_ACCENT_PRIMARY]);
-    lv_style_set_shadow_width(&s_styles.metric_card, 22);
-    lv_style_set_shadow_opa(&s_styles.metric_card, LV_OPA_30);
+    lv_style_set_shadow_width(&s_styles.metric_card, 16);
+    lv_style_set_shadow_opa(&s_styles.metric_card, LV_OPA_20);
     lv_style_set_transition(&s_styles.metric_card, &s_button_transition);
 
     lv_style_init(&s_styles.list_row);
-    lv_style_set_bg_opa(&s_styles.list_row, LV_OPA_COVER);
+    lv_style_set_bg_opa(&s_styles.list_row, 220);
     lv_style_set_bg_color(&s_styles.list_row, s_palette[UI_COLOR_CARD]);
-    lv_style_set_bg_grad_color(&s_styles.list_row, s_palette[UI_COLOR_SURFACE]);
+    lv_style_set_bg_grad_color(&s_styles.list_row, lv_color_lighten(s_palette[UI_COLOR_SURFACE], 3));
     lv_style_set_bg_grad_dir(&s_styles.list_row, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.list_row, UI_BORDER_THIN);
     lv_style_set_border_color(&s_styles.list_row, s_palette[UI_COLOR_BORDER]);
     lv_style_set_radius(&s_styles.list_row, 16);
     lv_style_set_pad_all(&s_styles.list_row, UI_SPACE_12);
-    lv_style_set_shadow_width(&s_styles.list_row, 8);
+    lv_style_set_shadow_width(&s_styles.list_row, 6);
     lv_style_set_shadow_color(&s_styles.list_row, lv_color_darken(s_palette[UI_COLOR_BG], 8));
     lv_style_set_shadow_opa(&s_styles.list_row, LV_OPA_20);
 
@@ -239,16 +239,16 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_set_bg_opa(&s_styles.modal_overlay, LV_OPA_70);
 
     lv_style_init(&s_styles.modal_card);
-    lv_style_set_bg_opa(&s_styles.modal_card, LV_OPA_COVER);
+    lv_style_set_bg_opa(&s_styles.modal_card, 230);
     lv_style_set_bg_color(&s_styles.modal_card, s_palette[UI_COLOR_SURFACE]);
-    lv_style_set_bg_grad_color(&s_styles.modal_card, s_palette[UI_COLOR_CARD]);
+    lv_style_set_bg_grad_color(&s_styles.modal_card, lv_color_lighten(s_palette[UI_COLOR_CARD], 3));
     lv_style_set_bg_grad_dir(&s_styles.modal_card, LV_GRAD_DIR_VER);
     lv_style_set_border_width(&s_styles.modal_card, UI_BORDER_THICK);
     lv_style_set_border_color(&s_styles.modal_card, s_palette[UI_COLOR_ACCENT_PRIMARY]);
     lv_style_set_radius(&s_styles.modal_card, 24);
     lv_style_set_pad_all(&s_styles.modal_card, UI_SPACE_16);
     lv_style_set_pad_row(&s_styles.modal_card, UI_SPACE_12);
-    lv_style_set_shadow_width(&s_styles.modal_card, 26);
+    lv_style_set_shadow_width(&s_styles.modal_card, 18);
     lv_style_set_shadow_color(&s_styles.modal_card, s_palette[UI_COLOR_ACCENT_PRIMARY]);
     lv_style_set_shadow_opa(&s_styles.modal_card, LV_OPA_30);
 
