@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/CMakeFiles/bootloader
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/CMakeFiles/bootloader.rule
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/CMakeFiles/bootloader-complete.rule
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/Users/macbook/Documents/GitHub/M5MonsterC5-Tab5_UI_EDIT/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
