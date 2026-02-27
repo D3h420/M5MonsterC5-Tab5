@@ -3229,6 +3229,122 @@ static void scan_btn_click_cb(lv_event_t *e)
     xTaskCreate(wifi_scan_task, "wifi_scan", 8192, NULL, 5, NULL);
 }
 
+static void add_tile_magenta_fade_border(lv_obj_t *tile)
+{
+    if (!tile) {
+        return;
+    }
+
+    const lv_color_t card = ui_theme_color(UI_COLOR_CARD);
+    const lv_color_t magenta = LV_COLOR_MAKE(0xFF, 0x2D, 0xA6);
+    const lv_color_t c_strong = lv_color_mix(magenta, card, 238);
+    const lv_color_t c_mid = lv_color_mix(magenta, card, 166);
+    const lv_color_t c_low = lv_color_mix(magenta, card, 104);
+    const lv_color_t c_faint = lv_color_mix(magenta, card, 58);
+    const lv_coord_t stroke = 2;
+
+    lv_obj_t *top_edge = lv_obj_create(tile);
+    lv_obj_remove_style_all(top_edge);
+    lv_obj_set_size(top_edge, lv_pct(82), stroke);
+    lv_obj_align(top_edge, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(top_edge, c_strong, 0);
+    lv_obj_set_style_bg_grad_color(top_edge, c_low, 0);
+    lv_obj_set_style_bg_grad_dir(top_edge, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_bg_opa(top_edge, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(top_edge, 2, 0);
+    lv_obj_add_flag(top_edge, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(top_edge, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *left_edge = lv_obj_create(tile);
+    lv_obj_remove_style_all(left_edge);
+    lv_obj_set_size(left_edge, stroke, lv_pct(72));
+    lv_obj_align(left_edge, LV_ALIGN_LEFT_MID, 0, -2);
+    lv_obj_set_style_bg_color(left_edge, c_strong, 0);
+    lv_obj_set_style_bg_grad_color(left_edge, c_mid, 0);
+    lv_obj_set_style_bg_grad_dir(left_edge, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(left_edge, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(left_edge, 2, 0);
+    lv_obj_add_flag(left_edge, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(left_edge, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *right_edge = lv_obj_create(tile);
+    lv_obj_remove_style_all(right_edge);
+    lv_obj_set_size(right_edge, stroke, lv_pct(72));
+    lv_obj_align(right_edge, LV_ALIGN_RIGHT_MID, 0, 2);
+    lv_obj_set_style_bg_color(right_edge, c_low, 0);
+    lv_obj_set_style_bg_grad_color(right_edge, c_faint, 0);
+    lv_obj_set_style_bg_grad_dir(right_edge, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(right_edge, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(right_edge, 2, 0);
+    lv_obj_add_flag(right_edge, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(right_edge, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *bottom_edge = lv_obj_create(tile);
+    lv_obj_remove_style_all(bottom_edge);
+    lv_obj_set_size(bottom_edge, lv_pct(82), stroke);
+    lv_obj_align(bottom_edge, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(bottom_edge, c_mid, 0);
+    lv_obj_set_style_bg_grad_color(bottom_edge, c_faint, 0);
+    lv_obj_set_style_bg_grad_dir(bottom_edge, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_bg_opa(bottom_edge, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bottom_edge, 2, 0);
+    lv_obj_add_flag(bottom_edge, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(bottom_edge, LV_OBJ_FLAG_CLICKABLE);
+
+    // Rounded corner caps so border visually follows tile radius.
+    lv_obj_t *corner_tl = lv_obj_create(tile);
+    lv_obj_remove_style_all(corner_tl);
+    lv_obj_set_size(corner_tl, 14, 14);
+    lv_obj_align(corner_tl, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_border_width(corner_tl, stroke, 0);
+    lv_obj_set_style_border_side(corner_tl, LV_BORDER_SIDE_TOP | LV_BORDER_SIDE_LEFT, 0);
+    lv_obj_set_style_border_color(corner_tl, c_strong, 0);
+    lv_obj_set_style_border_opa(corner_tl, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(corner_tl, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(corner_tl, 14, 0);
+    lv_obj_add_flag(corner_tl, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(corner_tl, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *corner_tr = lv_obj_create(tile);
+    lv_obj_remove_style_all(corner_tr);
+    lv_obj_set_size(corner_tr, 14, 14);
+    lv_obj_align(corner_tr, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_style_border_width(corner_tr, stroke, 0);
+    lv_obj_set_style_border_side(corner_tr, LV_BORDER_SIDE_TOP | LV_BORDER_SIDE_RIGHT, 0);
+    lv_obj_set_style_border_color(corner_tr, c_low, 0);
+    lv_obj_set_style_border_opa(corner_tr, 176, 0);
+    lv_obj_set_style_bg_opa(corner_tr, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(corner_tr, 14, 0);
+    lv_obj_add_flag(corner_tr, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(corner_tr, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *corner_bl = lv_obj_create(tile);
+    lv_obj_remove_style_all(corner_bl);
+    lv_obj_set_size(corner_bl, 14, 14);
+    lv_obj_align(corner_bl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_border_width(corner_bl, stroke, 0);
+    lv_obj_set_style_border_side(corner_bl, LV_BORDER_SIDE_BOTTOM | LV_BORDER_SIDE_LEFT, 0);
+    lv_obj_set_style_border_color(corner_bl, c_mid, 0);
+    lv_obj_set_style_border_opa(corner_bl, 188, 0);
+    lv_obj_set_style_bg_opa(corner_bl, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(corner_bl, 14, 0);
+    lv_obj_add_flag(corner_bl, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(corner_bl, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *corner_br = lv_obj_create(tile);
+    lv_obj_remove_style_all(corner_br);
+    lv_obj_set_size(corner_br, 14, 14);
+    lv_obj_align(corner_br, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_border_width(corner_br, stroke, 0);
+    lv_obj_set_style_border_side(corner_br, LV_BORDER_SIDE_BOTTOM | LV_BORDER_SIDE_RIGHT, 0);
+    lv_obj_set_style_border_color(corner_br, c_faint, 0);
+    lv_obj_set_style_border_opa(corner_br, 92, 0);
+    lv_obj_set_style_bg_opa(corner_br, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(corner_br, 14, 0);
+    lv_obj_add_flag(corner_br, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(corner_br, LV_OBJ_FLAG_CLICKABLE);
+}
+
 // Create a single tile button with icon, text, color
 static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *text, lv_color_t bg_color, lv_event_cb_t callback, const char *user_data)
 {
@@ -3260,6 +3376,7 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
     lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(tile, 14, 0);
     lv_obj_set_style_pad_row(tile, 7, 0);
+    add_tile_magenta_fade_border(tile);
 
     if (icon) {
         lv_obj_t *icon_row = lv_obj_create(tile);
