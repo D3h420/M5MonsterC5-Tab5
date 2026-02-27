@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "M5MonsterC5-Tab5",
-    "project_version":    "v1.0.8-13-g9aad2ed-dirty",
+    "project_version":    "v1.0.8-14-ga91ac45-dirty",
     "project_path":       "/Users/dominikhrycaj/Documents/GitHub/Tab5UI",
     "idf_path":           "/Users/dominikhrycaj/.espressif/v5.4.3/esp-idf",
     "build_dir":          "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/build",

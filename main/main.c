@@ -3252,7 +3252,7 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
     lv_obj_set_style_shadow_width(tile, 10, LV_STATE_DEFAULT);
     lv_obj_set_style_shadow_opa(tile, LV_OPA_10, LV_STATE_DEFAULT);
     lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(tile, 14, 0);
     lv_obj_set_style_pad_row(tile, 7, 0);
 
@@ -3269,13 +3269,13 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
         lv_obj_remove_style_all(icon_row);
         lv_obj_set_size(icon_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(icon_row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(icon_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_flex_align(icon_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(icon_row, 6, 0);
         lv_obj_clear_flag(icon_row, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t *icon_label = lv_label_create(icon_row);
         lv_label_set_text(icon_label, icon);
-        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_32, 0);
         lv_obj_set_style_text_color(icon_label, bg_color, 0);
         lv_obj_set_style_text_opa(icon_label, 235, 0);
 
@@ -3304,25 +3304,25 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
             lv_obj_set_style_text_font(title_label, &lv_font_montserrat_22, 0);
             lv_obj_set_style_text_color(title_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
             lv_obj_set_style_text_opa(title_label, 248, 0);
-            lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_LEFT, 0);
+            lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_width(title_label, lv_pct(100));
             lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
 
             lv_obj_t *subtitle_label = lv_label_create(tile);
             lv_label_set_text(subtitle_label, subtitle_text);
-            lv_obj_set_style_text_font(subtitle_label, &lv_font_montserrat_14, 0);
-            lv_obj_set_style_text_color(subtitle_label, ui_theme_color(UI_COLOR_TEXT_SECONDARY), 0);
-            lv_obj_set_style_text_opa(subtitle_label, 198, 0);
-            lv_obj_set_style_text_align(subtitle_label, LV_TEXT_ALIGN_LEFT, 0);
+            lv_obj_set_style_text_font(subtitle_label, &lv_font_montserrat_22, 0);
+            lv_obj_set_style_text_color(subtitle_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+            lv_obj_set_style_text_opa(subtitle_label, 248, 0);
+            lv_obj_set_style_text_align(subtitle_label, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_width(subtitle_label, lv_pct(100));
-            lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_WRAP);
+            lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_DOT);
         } else {
             lv_obj_t *text_label = lv_label_create(tile);
             lv_label_set_text(text_label, text);
             lv_obj_set_style_text_font(text_label, &lv_font_montserrat_22, 0);
             lv_obj_set_style_text_color(text_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
             lv_obj_set_style_text_opa(text_label, 248, 0);
-            lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_LEFT, 0);
+            lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_CENTER, 0);
             lv_label_set_long_mode(text_label, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(text_label, lv_pct(100));
         }
@@ -7792,7 +7792,7 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
     lv_obj_t *tiles_grid = create_uniform_tile_grid(*tiles_ptr, false);
     int tile_columns = 3;
     lv_coord_t tile_width = uniform_tile_width_for_columns(tile_columns, 16);
-    lv_coord_t tile_height = (tile_columns == 3) ? 168 : 180;
+    lv_coord_t tile_height = (tile_columns == 3) ? 182 : 192;
     
     // Create 7 tiles for device tabs (same for Grove, USB, MBus)
     // Use "Test" instead of "Attack" when Red Team is disabled
@@ -7936,7 +7936,7 @@ static void show_internal_tiles(void)
     lv_obj_t *tiles_grid = create_uniform_tile_grid(internal_tiles, false);
     int tile_columns = (lv_disp_get_hor_res(NULL) >= 640) ? 3 : 2;
     lv_coord_t tile_width = uniform_tile_width_for_columns(tile_columns, 16);
-    lv_coord_t tile_height = (tile_columns == 3) ? 168 : 180;
+    lv_coord_t tile_height = (tile_columns == 3) ? 182 : 192;
     
     // Create INTERNAL tiles
     lv_obj_t *settings_tile = create_tile(tiles_grid, LV_SYMBOL_SETTINGS, "Settings", COLOR_MATERIAL_PURPLE, internal_tile_event_cb, "Settings");
