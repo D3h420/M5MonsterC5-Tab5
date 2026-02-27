@@ -127,7 +127,7 @@ static const char *TAG = "wifi_scanner";
 #define TAB_COLOR_MBUS_INACTIVE  0x804D00  // Dark Orange
 #define TAB_COLOR_INTERNAL_ACTIVE 0x9C27B0  // Purple
 #define TAB_COLOR_INTERNAL_INACTIVE 0x4A148C  // Dark Purple
-#define UI_HEADER_HEIGHT 76
+#define UI_HEADER_HEIGHT 84
 #define UI_TABBAR_HEIGHT 56
 #define UI_CHROME_HEIGHT (UI_HEADER_HEIGHT + UI_TABBAR_HEIGHT)
 
@@ -3256,21 +3256,12 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
     lv_obj_set_style_pad_all(tile, 14, 0);
     lv_obj_set_style_pad_row(tile, 7, 0);
 
-    lv_obj_t *accent_line = lv_obj_create(tile);
-    lv_obj_remove_style_all(accent_line);
-    lv_obj_set_size(accent_line, 40, 3);
-    lv_obj_set_style_bg_opa(accent_line, 210, 0);
-    lv_obj_set_style_bg_color(accent_line, bg_color, 0);
-    lv_obj_set_style_radius(accent_line, 2, 0);
-    lv_obj_clear_flag(accent_line, LV_OBJ_FLAG_CLICKABLE);
-
     if (icon) {
         lv_obj_t *icon_row = lv_obj_create(tile);
         lv_obj_remove_style_all(icon_row);
-        lv_obj_set_size(icon_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_size(icon_row, lv_pct(100), LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(icon_row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(icon_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(icon_row, 6, 0);
         lv_obj_clear_flag(icon_row, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t *icon_label = lv_label_create(icon_row);
@@ -3278,12 +3269,6 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
         lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_32, 0);
         lv_obj_set_style_text_color(icon_label, bg_color, 0);
         lv_obj_set_style_text_opa(icon_label, 235, 0);
-
-        lv_obj_t *icon_marker = lv_label_create(icon_row);
-        lv_label_set_text(icon_marker, LV_SYMBOL_BULLET);
-        lv_obj_set_style_text_font(icon_marker, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(icon_marker, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
-        lv_obj_set_style_text_opa(icon_marker, 165, 0);
     }
 
     if (text) {
@@ -4156,8 +4141,8 @@ static void create_status_bar(void)
     ui_theme_apply_appbar(status_bar);
     lv_obj_set_style_pad_left(status_bar, 14, 0);
     lv_obj_set_style_pad_right(status_bar, 14, 0);
-    lv_obj_set_style_pad_top(status_bar, 10, 0);
-    lv_obj_set_style_pad_bottom(status_bar, 10, 0);
+    lv_obj_set_style_pad_top(status_bar, 12, 0);
+    lv_obj_set_style_pad_bottom(status_bar, 12, 0);
     lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
@@ -4214,39 +4199,39 @@ static void create_status_bar(void)
     // Portal icon (shown when portal is active)
     portal_icon = lv_label_create(right_cluster);
     lv_label_set_text(portal_icon, "PORTAL");
-    lv_obj_set_style_text_font(portal_icon, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(portal_icon, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(portal_icon, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
     lv_obj_add_flag(portal_icon, LV_OBJ_FLAG_HIDDEN);  // Hidden by default
 
     lv_obj_t *wifi_link_icon_wrap = lv_obj_create(right_cluster);
     lv_obj_remove_style_all(wifi_link_icon_wrap);
-    lv_obj_set_size(wifi_link_icon_wrap, 24, 20);
+    lv_obj_set_size(wifi_link_icon_wrap, 28, 24);
     lv_obj_clear_flag(wifi_link_icon_wrap, LV_OBJ_FLAG_CLICKABLE);
 
     wifi_link_label = lv_label_create(wifi_link_icon_wrap);
     lv_label_set_text(wifi_link_label, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_font(wifi_link_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(wifi_link_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(wifi_link_label, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
     lv_obj_center(wifi_link_label);
 
     wifi_link_strike_label = lv_label_create(wifi_link_icon_wrap);
     lv_label_set_text(wifi_link_strike_label, "/");
-    lv_obj_set_style_text_font(wifi_link_strike_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(wifi_link_strike_label, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(wifi_link_strike_label, ui_theme_color(UI_COLOR_ERROR), 0);
     lv_obj_center(wifi_link_strike_label);
 
     charging_status_label = lv_label_create(right_cluster);
     lv_label_set_text(charging_status_label, LV_SYMBOL_BATTERY_FULL);
-    lv_obj_set_style_text_font(charging_status_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(charging_status_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(charging_status_label, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
 
     battery_voltage_label = lv_label_create(right_cluster);
     lv_label_set_text(battery_voltage_label, "--%");
-    lv_obj_set_style_text_font(battery_voltage_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(battery_voltage_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(battery_voltage_label, ui_theme_color(UI_COLOR_TEXT_SECONDARY), 0);
 
     lv_obj_t *settings_btn = lv_btn_create(right_cluster);
-    lv_obj_set_size(settings_btn, 44, 40);
+    lv_obj_set_size(settings_btn, 48, 44);
     ui_theme_apply_icon_btn(settings_btn);
     lv_obj_set_style_radius(settings_btn, 12, 0);
     lv_obj_set_style_pad_all(settings_btn, 0, 0);
@@ -4255,7 +4240,7 @@ static void create_status_bar(void)
 
     lv_obj_t *settings_label = lv_label_create(settings_btn);
     lv_label_set_text(settings_label, LV_SYMBOL_SETTINGS);
-    lv_obj_set_style_text_font(settings_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(settings_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(settings_label, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
     lv_obj_center(settings_label);
     
