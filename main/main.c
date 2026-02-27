@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_vfs_fat.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "driver/uart.h"
@@ -226,6 +227,10 @@ typedef struct {
     lv_obj_t *dashboard_gps_value;
     lv_obj_t *dashboard_uptime_value;
     lv_obj_t *dashboard_sd_status_value;
+    lv_obj_t *dashboard_sd_percent_value;
+    lv_obj_t *dashboard_wpa_sec_value;
+    lv_obj_t *dashboard_vendors_value;
+    lv_obj_t *dashboard_sd_arc;
     lv_obj_t *dashboard_quote_value;
     int dashboard_handshake_count;
     bool dashboard_handshake_known;
@@ -3529,11 +3534,12 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
     lv_obj_t *panel = lv_obj_create(parent);
     lv_obj_remove_style_all(panel);
     lv_obj_set_width(panel, lv_pct(100));
-    lv_obj_set_style_min_height(panel, 224, 0);
+    lv_obj_set_height(panel, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(panel, 0, 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(panel, 0, 0);
     lv_obj_set_style_pad_all(panel, 0, 0);
-    lv_obj_set_style_pad_row(panel, 12, 0);
+    lv_obj_set_style_pad_row(panel, 8, 0);
     lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_CLICKABLE);
@@ -3543,14 +3549,14 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
     lv_obj_set_size(chips_row, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(chips_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(chips_row, 0, 0);
-    lv_obj_set_style_pad_column(chips_row, 12, 0);
-    lv_obj_set_style_pad_row(chips_row, 12, 0);
+    lv_obj_set_style_pad_column(chips_row, 8, 0);
+    lv_obj_set_style_pad_row(chips_row, 8, 0);
     lv_obj_set_flex_flow(chips_row, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(chips_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(chips_row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_coord_t chip_w = (lv_disp_get_hor_res(NULL) >= 680) ? lv_pct(32) : lv_pct(49);
-    lv_coord_t chip_h = (lv_disp_get_hor_res(NULL) >= 680) ? 94 : 88;
+    lv_coord_t chip_h = (lv_disp_get_hor_res(NULL) >= 680) ? 88 : 82;
 
     lv_obj_t *scan_chip = lv_obj_create(chips_row);
     ui_theme_apply_chip(scan_chip, ui_theme_color(UI_COLOR_SURFACE_ALT));
@@ -3568,21 +3574,21 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
 
     lv_obj_t *scan_title = lv_label_create(scan_chip);
     lv_label_set_text(scan_title, LV_SYMBOL_WIFI " LAST NET");
-    lv_obj_set_style_text_font(scan_title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(scan_title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(scan_title, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
 
     ctx->dashboard_scan_value = lv_label_create(scan_chip);
     lv_label_set_text(ctx->dashboard_scan_value, "--");
     lv_obj_set_width(ctx->dashboard_scan_value, lv_pct(100));
     lv_label_set_long_mode(ctx->dashboard_scan_value, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(ctx->dashboard_scan_value, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(ctx->dashboard_scan_value, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(ctx->dashboard_scan_value, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
 
     ctx->dashboard_clock_value = lv_label_create(scan_chip);
     lv_label_set_text(ctx->dashboard_clock_value, "Run scan to update");
     lv_obj_set_width(ctx->dashboard_clock_value, lv_pct(100));
     lv_label_set_long_mode(ctx->dashboard_clock_value, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(ctx->dashboard_clock_value, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(ctx->dashboard_clock_value, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(ctx->dashboard_clock_value, ui_theme_color(UI_COLOR_TEXT_SECONDARY), 0);
 
     lv_obj_t *gps_chip = lv_obj_create(chips_row);
@@ -3601,15 +3607,15 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
 
     lv_obj_t *gps_title = lv_label_create(gps_chip);
     lv_label_set_text(gps_title, LV_SYMBOL_GPS " GPS");
-    lv_obj_set_style_text_font(gps_title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(gps_title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(gps_title, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
 
     ctx->dashboard_gps_value = lv_label_create(gps_chip);
-    lv_label_set_text(ctx->dashboard_gps_value, "DISCONNECTED");
+    lv_label_set_text(ctx->dashboard_gps_value, "NO FIX");
     lv_obj_set_width(ctx->dashboard_gps_value, lv_pct(100));
     lv_label_set_long_mode(ctx->dashboard_gps_value, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(ctx->dashboard_gps_value, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(ctx->dashboard_gps_value, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_set_style_text_font(ctx->dashboard_gps_value, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(ctx->dashboard_gps_value, ui_theme_color(UI_COLOR_ERROR), 0);
 
     lv_obj_t *battery_chip = lv_obj_create(chips_row);
     ui_theme_apply_chip(battery_chip, ui_theme_color(UI_COLOR_SURFACE_ALT));
@@ -3627,14 +3633,14 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
 
     lv_obj_t *battery_title = lv_label_create(battery_chip);
     lv_label_set_text(battery_title, LV_SYMBOL_BATTERY_FULL " BATTERY");
-    lv_obj_set_style_text_font(battery_title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(battery_title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(battery_title, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
 
     ctx->dashboard_handshake_value = lv_label_create(battery_chip);
     lv_label_set_text(ctx->dashboard_handshake_value, "--.--V");
     lv_obj_set_width(ctx->dashboard_handshake_value, lv_pct(100));
     lv_label_set_long_mode(ctx->dashboard_handshake_value, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(ctx->dashboard_handshake_value, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(ctx->dashboard_handshake_value, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(ctx->dashboard_handshake_value, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
 
     lv_obj_t *handshake_chip = lv_obj_create(chips_row);
@@ -3653,14 +3659,14 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
 
     lv_obj_t *handshake_title = lv_label_create(handshake_chip);
     lv_label_set_text(handshake_title, LV_SYMBOL_DOWNLOAD " HANDSHAKES");
-    lv_obj_set_style_text_font(handshake_title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(handshake_title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(handshake_title, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
 
     ctx->dashboard_clock_meta = lv_label_create(handshake_chip);
     lv_label_set_text(ctx->dashboard_clock_meta, "--");
     lv_obj_set_width(ctx->dashboard_clock_meta, lv_pct(100));
     lv_label_set_long_mode(ctx->dashboard_clock_meta, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(ctx->dashboard_clock_meta, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(ctx->dashboard_clock_meta, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(ctx->dashboard_clock_meta, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
 
     lv_obj_t *aux_row = lv_obj_create(panel);
@@ -3668,16 +3674,17 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
     lv_obj_set_size(aux_row, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(aux_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(aux_row, 0, 0);
-    lv_obj_set_style_pad_column(aux_row, 12, 0);
+    lv_obj_set_style_pad_column(aux_row, 10, 0);
+    lv_obj_set_style_pad_row(aux_row, 0, 0);
     lv_obj_set_flex_flow(aux_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(aux_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(aux_row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *uptime_chip = lv_obj_create(aux_row);
     ui_theme_apply_chip(uptime_chip, ui_theme_color(UI_COLOR_SURFACE_ALT));
-    lv_obj_set_size(uptime_chip, lv_pct(49), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(uptime_chip, 136, 0);
-    lv_obj_set_style_border_opa(uptime_chip, 92, 0);
+    lv_obj_set_size(uptime_chip, lv_pct(32), chip_h);
+    lv_obj_set_style_bg_opa(uptime_chip, 146, 0);
+    lv_obj_set_style_border_opa(uptime_chip, 98, 0);
     lv_obj_set_style_radius(uptime_chip, 14, 0);
     lv_obj_set_style_pad_left(uptime_chip, 12, 0);
     lv_obj_set_style_pad_right(uptime_chip, 12, 0);
@@ -3690,21 +3697,21 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
 
     lv_obj_t *uptime_title = lv_label_create(uptime_chip);
     lv_label_set_text(uptime_title, "UPTIME");
-    lv_obj_set_style_text_font(uptime_title, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(uptime_title, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(uptime_title, ui_theme_color(UI_COLOR_TEXT_SECONDARY), 0);
 
     ctx->dashboard_uptime_value = lv_label_create(uptime_chip);
     lv_label_set_text(ctx->dashboard_uptime_value, "--:--:--");
     lv_obj_set_width(ctx->dashboard_uptime_value, lv_pct(100));
     lv_label_set_long_mode(ctx->dashboard_uptime_value, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(ctx->dashboard_uptime_value, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(ctx->dashboard_uptime_value, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(ctx->dashboard_uptime_value, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
 
     lv_obj_t *storage_chip = lv_obj_create(aux_row);
     ui_theme_apply_chip(storage_chip, ui_theme_color(UI_COLOR_SURFACE_ALT));
-    lv_obj_set_size(storage_chip, lv_pct(49), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(storage_chip, 136, 0);
-    lv_obj_set_style_border_opa(storage_chip, 92, 0);
+    lv_obj_set_size(storage_chip, lv_pct(32), chip_h);
+    lv_obj_set_style_bg_opa(storage_chip, 146, 0);
+    lv_obj_set_style_border_opa(storage_chip, 98, 0);
     lv_obj_set_style_radius(storage_chip, 14, 0);
     lv_obj_set_style_pad_left(storage_chip, 12, 0);
     lv_obj_set_style_pad_right(storage_chip, 12, 0);
@@ -3716,16 +3723,117 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
     lv_obj_clear_flag(storage_chip, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *storage_title = lv_label_create(storage_chip);
-    lv_label_set_text(storage_title, "STORAGE");
-    lv_obj_set_style_text_font(storage_title, &lv_font_montserrat_10, 0);
+    lv_label_set_text(storage_title, "SD STORAGE");
+    lv_obj_set_style_text_font(storage_title, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(storage_title, ui_theme_color(UI_COLOR_TEXT_SECONDARY), 0);
 
-    ctx->dashboard_sd_status_value = lv_label_create(storage_chip);
+    lv_obj_t *storage_row = lv_obj_create(storage_chip);
+    lv_obj_remove_style_all(storage_row);
+    lv_obj_set_size(storage_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(storage_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(storage_row, 0, 0);
+    lv_obj_set_style_pad_column(storage_row, 8, 0);
+    lv_obj_set_flex_flow(storage_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(storage_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(storage_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    ctx->dashboard_sd_arc = lv_arc_create(storage_row);
+    lv_obj_set_size(ctx->dashboard_sd_arc, 44, 44);
+    lv_obj_remove_style(ctx->dashboard_sd_arc, NULL, LV_PART_KNOB);
+    lv_obj_set_style_arc_width(ctx->dashboard_sd_arc, 5, LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(ctx->dashboard_sd_arc, LV_OPA_20, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(ctx->dashboard_sd_arc, ui_theme_color(UI_COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_arc_width(ctx->dashboard_sd_arc, 5, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(ctx->dashboard_sd_arc, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), LV_PART_INDICATOR);
+    lv_obj_set_style_pad_all(ctx->dashboard_sd_arc, 0, 0);
+    lv_arc_set_mode(ctx->dashboard_sd_arc, LV_ARC_MODE_NORMAL);
+    lv_arc_set_range(ctx->dashboard_sd_arc, 0, 100);
+    lv_arc_set_rotation(ctx->dashboard_sd_arc, 270);
+    lv_arc_set_bg_angles(ctx->dashboard_sd_arc, 0, 360);
+    lv_arc_set_value(ctx->dashboard_sd_arc, 0);
+    lv_obj_clear_flag(ctx->dashboard_sd_arc, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *storage_stats_col = lv_obj_create(storage_row);
+    lv_obj_remove_style_all(storage_stats_col);
+    lv_obj_set_size(storage_stats_col, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(storage_stats_col, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(storage_stats_col, 0, 0);
+    lv_obj_set_style_pad_row(storage_stats_col, 2, 0);
+    lv_obj_set_flex_flow(storage_stats_col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(storage_stats_col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(storage_stats_col, LV_OBJ_FLAG_SCROLLABLE);
+
+    ctx->dashboard_sd_percent_value = lv_label_create(storage_stats_col);
+    lv_label_set_text(ctx->dashboard_sd_percent_value, "--% FREE");
+    lv_obj_set_style_text_font(ctx->dashboard_sd_percent_value, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(ctx->dashboard_sd_percent_value, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    ctx->dashboard_sd_status_value = lv_label_create(storage_stats_col);
     lv_label_set_text(ctx->dashboard_sd_status_value, "--");
-    lv_obj_set_width(ctx->dashboard_sd_status_value, lv_pct(100));
+    lv_obj_set_width(ctx->dashboard_sd_status_value, LV_SIZE_CONTENT);
     lv_label_set_long_mode(ctx->dashboard_sd_status_value, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(ctx->dashboard_sd_status_value, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(ctx->dashboard_sd_status_value, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(ctx->dashboard_sd_status_value, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    lv_obj_t *wpa_chip = lv_obj_create(aux_row);
+    ui_theme_apply_chip(wpa_chip, ui_theme_color(UI_COLOR_SURFACE_ALT));
+    lv_obj_set_size(wpa_chip, lv_pct(32), chip_h);
+    lv_obj_set_style_bg_opa(wpa_chip, 146, 0);
+    lv_obj_set_style_border_opa(wpa_chip, 98, 0);
+    lv_obj_set_style_radius(wpa_chip, 14, 0);
+    lv_obj_set_style_pad_left(wpa_chip, 12, 0);
+    lv_obj_set_style_pad_right(wpa_chip, 12, 0);
+    lv_obj_set_style_pad_top(wpa_chip, 8, 0);
+    lv_obj_set_style_pad_bottom(wpa_chip, 8, 0);
+    lv_obj_set_style_pad_row(wpa_chip, 4, 0);
+    lv_obj_set_flex_flow(wpa_chip, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_grow(wpa_chip, 1);
+    lv_obj_clear_flag(wpa_chip, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *wpa_title = lv_label_create(wpa_chip);
+    lv_label_set_text(wpa_title, "FILES");
+    lv_obj_set_style_text_font(wpa_title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(wpa_title, ui_theme_color(UI_COLOR_TEXT_SECONDARY), 0);
+
+    lv_obj_t *wpa_row = lv_obj_create(wpa_chip);
+    lv_obj_remove_style_all(wpa_row);
+    lv_obj_set_size(wpa_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(wpa_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(wpa_row, 0, 0);
+    lv_obj_set_style_pad_column(wpa_row, 8, 0);
+    lv_obj_set_flex_flow(wpa_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(wpa_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(wpa_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *wpa_label = lv_label_create(wpa_row);
+    lv_label_set_text(wpa_label, "wpa-sec");
+    lv_obj_set_style_text_font(wpa_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(wpa_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    ctx->dashboard_wpa_sec_value = lv_label_create(wpa_row);
+    lv_label_set_text(ctx->dashboard_wpa_sec_value, "X");
+    lv_obj_set_style_text_font(ctx->dashboard_wpa_sec_value, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(ctx->dashboard_wpa_sec_value, ui_theme_color(UI_COLOR_ERROR), 0);
+
+    lv_obj_t *vendors_row = lv_obj_create(wpa_chip);
+    lv_obj_remove_style_all(vendors_row);
+    lv_obj_set_size(vendors_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(vendors_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(vendors_row, 0, 0);
+    lv_obj_set_style_pad_column(vendors_row, 8, 0);
+    lv_obj_set_flex_flow(vendors_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(vendors_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(vendors_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *vendors_label = lv_label_create(vendors_row);
+    lv_label_set_text(vendors_label, "vendors");
+    lv_obj_set_style_text_font(vendors_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(vendors_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    ctx->dashboard_vendors_value = lv_label_create(vendors_row);
+    lv_label_set_text(ctx->dashboard_vendors_value, "X");
+    lv_obj_set_style_text_font(ctx->dashboard_vendors_value, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(ctx->dashboard_vendors_value, ui_theme_color(UI_COLOR_ERROR), 0);
 
     lv_obj_t *quote_chip = lv_obj_create(panel);
     ui_theme_apply_chip(quote_chip, ui_theme_color(UI_COLOR_SURFACE_ALT));
@@ -3737,8 +3845,8 @@ static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ct
     lv_obj_set_style_radius(quote_chip, 14, 0);
     lv_obj_set_style_pad_left(quote_chip, 12, 0);
     lv_obj_set_style_pad_right(quote_chip, 12, 0);
-    lv_obj_set_style_pad_top(quote_chip, 10, 0);
-    lv_obj_set_style_pad_bottom(quote_chip, 10, 0);
+    lv_obj_set_style_pad_top(quote_chip, 6, 0);
+    lv_obj_set_style_pad_bottom(quote_chip, 6, 0);
     lv_obj_clear_flag(quote_chip, LV_OBJ_FLAG_SCROLLABLE);
 
     ctx->dashboard_quote_value = lv_label_create(quote_chip);
@@ -3792,8 +3900,8 @@ static void update_live_dashboard_for_ctx(tab_context_t *ctx)
     }
 
     if (ctx->dashboard_gps_value && lv_obj_is_valid(ctx->dashboard_gps_value)) {
-        const char *gps_state = "DISCONNECTED";
-        lv_color_t gps_color = ui_theme_color(UI_COLOR_TEXT_MUTED);
+        const char *gps_state = "NO FIX";
+        lv_color_t gps_color = ui_theme_color(UI_COLOR_ERROR);
 
         if (ctx->wardrive_gps_fix) {
             gps_state = "CONNECTED";
@@ -3854,20 +3962,85 @@ static void update_live_dashboard_for_ctx(tab_context_t *ctx)
         lv_obj_set_style_text_color(ctx->dashboard_uptime_value, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
     }
 
+    struct stat wpa1_st = {0};
+    struct stat wpa2_st = {0};
+    struct stat oui1_st = {0};
+    struct stat oui2_st = {0};
+    bool wpa_sec_exists = (stat("/sdcard/wpa-sec.txt", &wpa1_st) == 0) ||
+                          (stat("/sdcard/lab/wpa-sec.txt", &wpa2_st) == 0);
+    bool vendors_exists = (stat("/sdcard/oui.txt", &oui1_st) == 0) ||
+                          (stat("/sdcard/lab/oui.txt", &oui2_st) == 0);
+
+    if (ctx->dashboard_wpa_sec_value && lv_obj_is_valid(ctx->dashboard_wpa_sec_value)) {
+        bool ok = ctx->sd_card_present && wpa_sec_exists;
+        lv_label_set_text(ctx->dashboard_wpa_sec_value, ok ? "CHECK" : "X");
+        lv_obj_set_style_text_color(
+            ctx->dashboard_wpa_sec_value,
+            ok ? ui_theme_color(UI_COLOR_SUCCESS) : ui_theme_color(UI_COLOR_ERROR),
+            0);
+    }
+    if (ctx->dashboard_vendors_value && lv_obj_is_valid(ctx->dashboard_vendors_value)) {
+        bool ok = ctx->sd_card_present && vendors_exists;
+        lv_label_set_text(ctx->dashboard_vendors_value, ok ? "CHECK" : "X");
+        lv_obj_set_style_text_color(
+            ctx->dashboard_vendors_value,
+            ok ? ui_theme_color(UI_COLOR_SUCCESS) : ui_theme_color(UI_COLOR_ERROR),
+            0);
+    }
+
     if (ctx->dashboard_sd_status_value && lv_obj_is_valid(ctx->dashboard_sd_status_value)) {
-        struct stat wpa1_st = {0};
-        struct stat wpa2_st = {0};
-        bool wpa_sec_exists = (stat("/sdcard/wpa-sec.txt", &wpa1_st) == 0) ||
-                              (stat("/sdcard/lab/wpa-sec.txt", &wpa2_st) == 0);
         if (!ctx->sd_card_present) {
-            lv_label_set_text(ctx->dashboard_sd_status_value, "No SD");
+            lv_label_set_text(ctx->dashboard_sd_status_value, "Unavailable");
             lv_obj_set_style_text_color(ctx->dashboard_sd_status_value, ui_theme_color(UI_COLOR_ERROR), 0);
-        } else if (wpa_sec_exists) {
-            lv_label_set_text(ctx->dashboard_sd_status_value, "SD OK | WPA-SEC");
-            lv_obj_set_style_text_color(ctx->dashboard_sd_status_value, ui_theme_color(UI_COLOR_SUCCESS), 0);
+            if (ctx->dashboard_sd_percent_value && lv_obj_is_valid(ctx->dashboard_sd_percent_value)) {
+                lv_label_set_text(ctx->dashboard_sd_percent_value, "--% FREE");
+                lv_obj_set_style_text_color(ctx->dashboard_sd_percent_value, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
+            }
+            if (ctx->dashboard_sd_arc && lv_obj_is_valid(ctx->dashboard_sd_arc)) {
+                lv_arc_set_value(ctx->dashboard_sd_arc, 0);
+                lv_obj_set_style_arc_color(ctx->dashboard_sd_arc, ui_theme_color(UI_COLOR_BORDER), LV_PART_INDICATOR);
+            }
         } else {
-            lv_label_set_text(ctx->dashboard_sd_status_value, "SD OK | WPA-SEC --");
-            lv_obj_set_style_text_color(ctx->dashboard_sd_status_value, ui_theme_color(UI_COLOR_TEXT_SECONDARY), 0);
+            uint64_t total_bytes = 0;
+            uint64_t free_bytes = 0;
+            if (esp_vfs_fat_info("/sdcard", &total_bytes, &free_bytes) == ESP_OK && total_bytes > 0) {
+                int free_pct = (int)((free_bytes * 100ULL) / total_bytes);
+                if (free_pct < 0) free_pct = 0;
+                if (free_pct > 100) free_pct = 100;
+
+                lv_label_set_text_fmt(
+                    ctx->dashboard_sd_status_value,
+                    "%llu/%llu GB",
+                    (unsigned long long)(free_bytes / (1024ULL * 1024ULL * 1024ULL)),
+                    (unsigned long long)(total_bytes / (1024ULL * 1024ULL * 1024ULL)));
+                lv_obj_set_style_text_color(ctx->dashboard_sd_status_value, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+                if (ctx->dashboard_sd_percent_value && lv_obj_is_valid(ctx->dashboard_sd_percent_value)) {
+                    lv_label_set_text_fmt(ctx->dashboard_sd_percent_value, "%d%% FREE", free_pct);
+                    lv_obj_set_style_text_color(ctx->dashboard_sd_percent_value, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+                }
+                if (ctx->dashboard_sd_arc && lv_obj_is_valid(ctx->dashboard_sd_arc)) {
+                    lv_arc_set_value(ctx->dashboard_sd_arc, free_pct);
+                    lv_color_t arc_color = ui_theme_color(UI_COLOR_SUCCESS);
+                    if (free_pct <= 15) {
+                        arc_color = ui_theme_color(UI_COLOR_ERROR);
+                    } else if (free_pct <= 35) {
+                        arc_color = ui_theme_color(UI_COLOR_WARNING);
+                    }
+                    lv_obj_set_style_arc_color(ctx->dashboard_sd_arc, arc_color, LV_PART_INDICATOR);
+                }
+            } else {
+                lv_label_set_text(ctx->dashboard_sd_status_value, "SD mounted");
+                lv_obj_set_style_text_color(ctx->dashboard_sd_status_value, ui_theme_color(UI_COLOR_SUCCESS), 0);
+                if (ctx->dashboard_sd_percent_value && lv_obj_is_valid(ctx->dashboard_sd_percent_value)) {
+                    lv_label_set_text(ctx->dashboard_sd_percent_value, "--% FREE");
+                    lv_obj_set_style_text_color(ctx->dashboard_sd_percent_value, ui_theme_color(UI_COLOR_TEXT_MUTED), 0);
+                }
+                if (ctx->dashboard_sd_arc && lv_obj_is_valid(ctx->dashboard_sd_arc)) {
+                    lv_arc_set_value(ctx->dashboard_sd_arc, 0);
+                    lv_obj_set_style_arc_color(ctx->dashboard_sd_arc, ui_theme_color(UI_COLOR_BORDER), LV_PART_INDICATOR);
+                }
+            }
         }
     }
 }
@@ -7789,15 +7962,15 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
         enable_red_team ? "Global WiFi\nAttacks" : "Global WiFi\nTests", 
         COLOR_MATERIAL_RED, main_tile_event_cb, "Global WiFi Attacks");
     lv_obj_set_size(tile, tile_width, tile_height);
-    tile = create_tile(tiles_grid, LV_SYMBOL_SAVE, "Compromised\nData", COLOR_MATERIAL_GREEN, main_tile_event_cb, "Compromised Data");
+    tile = create_tile(tiles_grid, LV_SYMBOL_DIRECTORY, "Compromised\nData", COLOR_MATERIAL_GREEN, main_tile_event_cb, "Compromised Data");
     lv_obj_set_size(tile, tile_width, tile_height);
     tile = create_tile(tiles_grid, LV_SYMBOL_EYE_OPEN, "Deauth\nDetector", COLOR_MATERIAL_AMBER, main_tile_event_cb, "Deauth Detector");
     lv_obj_set_size(tile, tile_width, tile_height);
     tile = create_tile(tiles_grid, LV_SYMBOL_BLUETOOTH, "Bluetooth", COLOR_MATERIAL_CYAN, main_tile_event_cb, "Bluetooth");
     lv_obj_set_size(tile, tile_width, tile_height);
-    tile = create_tile(tiles_grid, LV_SYMBOL_LOOP, "Network\nObserver", COLOR_MATERIAL_TEAL, main_tile_event_cb, "Network Observer");
+    tile = create_tile(tiles_grid, LV_SYMBOL_EYE_OPEN, "Network\nObserver", COLOR_MATERIAL_TEAL, main_tile_event_cb, "Network Observer");
     lv_obj_set_size(tile, tile_width, tile_height);
-    tile = create_tile(tiles_grid, LV_SYMBOL_WIFI, "Karma", COLOR_MATERIAL_ORANGE, main_tile_event_cb, "Karma");
+    tile = create_tile(tiles_grid, LV_SYMBOL_REFRESH, "Karma", COLOR_MATERIAL_ORANGE, main_tile_event_cb, "Karma");
     lv_obj_set_size(tile, tile_width, tile_height);
 
     // Flexible spacer keeps dashboard anchored to the bottom without compressing it.
@@ -18294,6 +18467,10 @@ static void invalidate_red_team_dependent_pages(void)
             ctx->dashboard_gps_value = NULL;
             ctx->dashboard_uptime_value = NULL;
             ctx->dashboard_sd_status_value = NULL;
+            ctx->dashboard_sd_percent_value = NULL;
+            ctx->dashboard_wpa_sec_value = NULL;
+            ctx->dashboard_vendors_value = NULL;
+            ctx->dashboard_sd_arc = NULL;
             ctx->dashboard_quote_value = NULL;
             ctx->dashboard_handshake_known = false;
             ctx->dashboard_handshake_count = -1;
