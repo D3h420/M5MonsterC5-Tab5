@@ -52,6 +52,7 @@
 // #include "esp_codec_dev.h"
 
 static const char *TAG = "wifi_scanner";
+LV_IMAGE_DECLARE(splash_bg);
 
 // UART Configuration for ESP32C5 communication
 // Note: TX/RX pins are configured dynamically via get_uart_pins() based on NVS settings
@@ -901,6 +902,7 @@ static lv_obj_t *scan_overlay = NULL;
 // Splash screen
 static lv_obj_t *splash_screen = NULL;
 static lv_obj_t *splash_label = NULL;
+static lv_obj_t *splash_label_shadow = NULL;
 static lv_obj_t *splash_subtitle = NULL;
 static lv_obj_t *splash_status = NULL;
 static lv_obj_t *splash_frame_box = NULL;
@@ -2796,12 +2798,8 @@ static void hide_evil_twin_loading_overlay(void) {
 
 #define SPLASH_TICK_MS            40
 #define SPLASH_TOTAL_FRAMES       72
-#define SPLASH_SCAN_START         4
-#define SPLASH_SCAN_END           48
 #define SPLASH_TITLE_IN_START     8
 #define SPLASH_TITLE_GLITCH_END   34
-#define SPLASH_SUB_IN_START       22
-#define SPLASH_STATUS_IN_START    16
 #define SPLASH_STABLE_START       36
 #define SPLASH_FADE_OUT_START     58
 
@@ -2824,6 +2822,7 @@ static void splash_timer_cb(lv_timer_t *timer)
             lv_obj_del(splash_screen);
             splash_screen = NULL;
             splash_label = NULL;
+            splash_label_shadow = NULL;
             splash_subtitle = NULL;
             splash_status = NULL;
             splash_frame_box = NULL;
@@ -2836,36 +2835,7 @@ static void splash_timer_cb(lv_timer_t *timer)
         return;
     }
 
-    if (splash_grid_overlay) {
-        int32_t grid_opa = (splash_frame * 210) / SPLASH_STABLE_START;
-        if (splash_frame > SPLASH_STABLE_START) {
-            int32_t pulse = splash_frame % 10;
-            pulse = (pulse <= 5) ? pulse : (10 - pulse);
-            grid_opa = 160 + (pulse * 6);
-        }
-        lv_obj_set_style_opa(splash_grid_overlay, (lv_opa_t)LV_CLAMP(0, grid_opa, 210), 0);
-    }
-
-    if (splash_frame_box) {
-        int32_t phase = splash_frame % 20;
-        int32_t pulse = (phase <= 10) ? phase : (20 - phase);
-        int32_t border_opa = 110 + (pulse * 9);
-        lv_obj_set_style_border_opa(splash_frame_box, (lv_opa_t)LV_CLAMP(90, border_opa, 220), 0);
-        lv_obj_set_style_shadow_opa(splash_frame_box, (lv_opa_t)LV_CLAMP(20, 28 + (pulse * 4), 80), 0);
-    }
-
-    if (splash_scanline) {
-        if (splash_frame >= SPLASH_SCAN_START && splash_frame <= SPLASH_SCAN_END) {
-            int32_t pass_frame = splash_frame - SPLASH_SCAN_START;
-            int32_t pass_total = SPLASH_SCAN_END - SPLASH_SCAN_START;
-            lv_coord_t screen_h = lv_disp_get_ver_res(NULL);
-            lv_coord_t y = -8 + (pass_frame * (screen_h + 16)) / LV_MAX(1, pass_total);
-            lv_obj_align(splash_scanline, LV_ALIGN_TOP_MID, 0, y);
-            lv_obj_set_style_opa(splash_scanline, LV_OPA_70, 0);
-        } else {
-            lv_obj_set_style_opa(splash_scanline, LV_OPA_0, 0);
-        }
-    }
+    lv_coord_t title_x = 0;
 
     if (splash_label) {
         int32_t title_opa = 0;
@@ -2879,7 +2849,6 @@ static void splash_timer_cb(lv_timer_t *timer)
         }
 
         lv_color_t title_color = lv_color_hex(0x89F5FF);
-        lv_coord_t title_x = 0;
         if (splash_frame <= SPLASH_TITLE_GLITCH_END) {
             switch (splash_frame % 4) {
                 case 0: title_color = lv_color_hex(0x89F5FF); break;
@@ -2896,45 +2865,21 @@ static void splash_timer_cb(lv_timer_t *timer)
 
         lv_obj_set_style_text_opa(splash_label, (lv_opa_t)LV_CLAMP(0, title_opa, 255), 0);
         lv_obj_set_style_text_color(splash_label, title_color, 0);
-        lv_obj_align(splash_label, LV_ALIGN_CENTER, title_x, -18);
+        lv_obj_align(splash_label, LV_ALIGN_BOTTOM_MID, title_x, -72);
     }
 
-    if (splash_subtitle) {
-        int32_t sub_opa = 0;
-        if (splash_frame >= SPLASH_SUB_IN_START) {
+    if (splash_label_shadow) {
+        int32_t shadow_opa = 0;
+        if (splash_frame >= SPLASH_TITLE_IN_START) {
             if (splash_frame >= SPLASH_STABLE_START) {
-                sub_opa = 230;
+                shadow_opa = 170;
             } else {
-                sub_opa = ((splash_frame - SPLASH_SUB_IN_START) * 230) /
-                          (SPLASH_STABLE_START - SPLASH_SUB_IN_START);
+                shadow_opa = ((splash_frame - SPLASH_TITLE_IN_START) * 170) /
+                             (SPLASH_STABLE_START - SPLASH_TITLE_IN_START);
             }
         }
-        lv_obj_set_style_text_opa(splash_subtitle, (lv_opa_t)LV_CLAMP(0, sub_opa, 230), 0);
-        lv_obj_align(splash_subtitle, LV_ALIGN_CENTER, 0, 34);
-    }
-
-    if (splash_status) {
-        const char *status_text = "[BOOTLINK ESTABLISHED]";
-        lv_color_t status_color = lv_color_hex(0x62B2FF);
-        if (splash_frame >= 18 && splash_frame < 30) {
-            status_text = "[SYNCING TELEMETRY BUS]";
-            status_color = lv_color_hex(0x7CC6FF);
-        } else if (splash_frame >= 30 && splash_frame < 44) {
-            status_text = "[LOCKING CONTROL SURFACE]";
-            status_color = lv_color_hex(0x76F2C7);
-        } else if (splash_frame >= 44) {
-            status_text = "[READY]";
-            status_color = lv_color_hex(0x9EF8FF);
-        }
-        lv_label_set_text(splash_status, status_text);
-        lv_obj_set_style_text_color(splash_status, status_color, 0);
-
-        int32_t status_opa = 0;
-        if (splash_frame >= SPLASH_STATUS_IN_START) {
-            status_opa = ((splash_frame - SPLASH_STATUS_IN_START) * 230) /
-                         (SPLASH_STABLE_START - SPLASH_STATUS_IN_START);
-        }
-        lv_obj_set_style_text_opa(splash_status, (lv_opa_t)LV_CLAMP(0, status_opa, 230), 0);
+        lv_obj_set_style_text_opa(splash_label_shadow, (lv_opa_t)LV_CLAMP(0, shadow_opa, 170), 0);
+        lv_obj_align(splash_label_shadow, LV_ALIGN_BOTTOM_MID, title_x + 3, -68);
     }
 
     if (splash_screen) {
@@ -3026,7 +2971,7 @@ static void play_startup_beep(void)
     vTaskDelete(NULL);
 }
 
-// Show splash screen with cyber tech animation
+// Show splash screen with static background and LAB5 glitch branding
 static void show_splash_screen(void)
 {
     ESP_LOGI(TAG, "Showing splash screen...");
@@ -3045,126 +2990,30 @@ static void show_splash_screen(void)
     lv_obj_set_style_bg_opa(splash_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(splash_screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Grid overlay for cyber HUD feel
-    splash_grid_overlay = lv_obj_create(splash_screen);
-    lv_obj_remove_style_all(splash_grid_overlay);
-    lv_obj_set_size(splash_grid_overlay, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_opa(splash_grid_overlay, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_opa(splash_grid_overlay, LV_OPA_0, 0);
-    lv_obj_clear_flag(splash_grid_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    // Static intro background image (generated from main/images/splash_bg.jpg)
+    lv_obj_t *splash_bg_image = lv_image_create(splash_screen);
+    lv_image_set_src(splash_bg_image, &splash_bg);
+    lv_obj_center(splash_bg_image);
+    lv_obj_clear_flag(splash_bg_image, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_move_background(splash_bg_image);
 
-    lv_coord_t grid_w = lv_disp_get_hor_res(NULL);
-    lv_coord_t grid_h = lv_disp_get_ver_res(NULL);
-    for (lv_coord_t y = 18; y < grid_h; y += 48) {
-        lv_obj_t *line = lv_obj_create(splash_grid_overlay);
-        lv_obj_remove_style_all(line);
-        lv_obj_set_size(line, grid_w, 1);
-        lv_obj_set_pos(line, 0, y);
-        lv_obj_set_style_bg_color(line, lv_color_hex(0x24406A), 0);
-        lv_obj_set_style_bg_opa(line, LV_OPA_40, 0);
-    }
-    for (lv_coord_t x = 10; x < grid_w; x += 68) {
-        lv_obj_t *line = lv_obj_create(splash_grid_overlay);
-        lv_obj_remove_style_all(line);
-        lv_obj_set_size(line, 1, grid_h);
-        lv_obj_set_pos(line, x, 0);
-        lv_obj_set_style_bg_color(line, lv_color_hex(0x1D3458), 0);
-        lv_obj_set_style_bg_opa(line, LV_OPA_30, 0);
-    }
+    // Shadow under main brand for readability over colorful background
+    splash_label_shadow = lv_label_create(splash_screen);
+    lv_label_set_text(splash_label_shadow, "LAB5");
+    lv_obj_set_style_text_font(splash_label_shadow, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(splash_label_shadow, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_letter_space(splash_label_shadow, 7, 0);
+    lv_obj_set_style_text_opa(splash_label_shadow, LV_OPA_0, 0);
+    lv_obj_align(splash_label_shadow, LV_ALIGN_BOTTOM_MID, 3, -68);
 
-    splash_frame_box = lv_obj_create(splash_screen);
-    lv_obj_remove_style_all(splash_frame_box);
-    lv_obj_set_size(splash_frame_box, lv_pct(78), 300);
-    lv_obj_align(splash_frame_box, LV_ALIGN_CENTER, 0, -18);
-    lv_obj_set_style_bg_opa(splash_frame_box, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(splash_frame_box, 2, 0);
-    lv_obj_set_style_border_color(splash_frame_box, lv_color_hex(0x66E8FF), 0);
-    lv_obj_set_style_border_opa(splash_frame_box, LV_OPA_50, 0);
-    lv_obj_set_style_radius(splash_frame_box, 10, 0);
-    lv_obj_set_style_shadow_width(splash_frame_box, 22, 0);
-    lv_obj_set_style_shadow_color(splash_frame_box, lv_color_hex(0x1FA0FF), 0);
-    lv_obj_set_style_shadow_opa(splash_frame_box, LV_OPA_20, 0);
-
-    // Corner markers
-    lv_obj_t *corner = lv_obj_create(splash_frame_box);
-    lv_obj_remove_style_all(corner);
-    lv_obj_set_size(corner, 42, 4);
-    lv_obj_align(corner, LV_ALIGN_TOP_LEFT, 8, 8);
-    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
-    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
-    corner = lv_obj_create(splash_frame_box);
-    lv_obj_remove_style_all(corner);
-    lv_obj_set_size(corner, 4, 34);
-    lv_obj_align(corner, LV_ALIGN_TOP_LEFT, 8, 8);
-    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
-    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
-
-    corner = lv_obj_create(splash_frame_box);
-    lv_obj_remove_style_all(corner);
-    lv_obj_set_size(corner, 42, 4);
-    lv_obj_align(corner, LV_ALIGN_TOP_RIGHT, -8, 8);
-    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
-    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
-    corner = lv_obj_create(splash_frame_box);
-    lv_obj_remove_style_all(corner);
-    lv_obj_set_size(corner, 4, 34);
-    lv_obj_align(corner, LV_ALIGN_TOP_RIGHT, -8, 8);
-    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
-    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
-
-    corner = lv_obj_create(splash_frame_box);
-    lv_obj_remove_style_all(corner);
-    lv_obj_set_size(corner, 42, 4);
-    lv_obj_align(corner, LV_ALIGN_BOTTOM_LEFT, 8, -8);
-    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
-    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
-    corner = lv_obj_create(splash_frame_box);
-    lv_obj_remove_style_all(corner);
-    lv_obj_set_size(corner, 4, 34);
-    lv_obj_align(corner, LV_ALIGN_BOTTOM_LEFT, 8, -8);
-    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
-    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
-
-    corner = lv_obj_create(splash_frame_box);
-    lv_obj_remove_style_all(corner);
-    lv_obj_set_size(corner, 42, 4);
-    lv_obj_align(corner, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
-    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
-    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
-    corner = lv_obj_create(splash_frame_box);
-    lv_obj_remove_style_all(corner);
-    lv_obj_set_size(corner, 4, 34);
-    lv_obj_align(corner, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
-    lv_obj_set_style_bg_color(corner, lv_color_hex(0x7CF2FF), 0);
-    lv_obj_set_style_bg_opa(corner, LV_OPA_80, 0);
-
-    splash_scanline = lv_obj_create(splash_screen);
-    lv_obj_remove_style_all(splash_scanline);
-    lv_obj_set_size(splash_scanline, lv_pct(100), 5);
-    lv_obj_set_style_bg_color(splash_scanline, lv_color_hex(0x7CEFFF), 0);
-    lv_obj_set_style_bg_opa(splash_scanline, LV_OPA_70, 0);
-    lv_obj_set_style_shadow_width(splash_scanline, 16, 0);
-    lv_obj_set_style_shadow_color(splash_scanline, lv_color_hex(0x4AC7FF), 0);
-    lv_obj_set_style_shadow_opa(splash_scanline, LV_OPA_40, 0);
-    lv_obj_set_style_opa(splash_scanline, LV_OPA_0, 0);
-    lv_obj_align(splash_scanline, LV_ALIGN_TOP_MID, 0, -10);
-
-    // Main brand
-    splash_label = lv_label_create(splash_frame_box);
+    // Main LAB5 brand with glitch coloring
+    splash_label = lv_label_create(splash_screen);
     lv_label_set_text(splash_label, "LAB5");
-    lv_obj_set_style_text_font(splash_label, &lv_font_montserrat_44, 0);
+    lv_obj_set_style_text_font(splash_label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(splash_label, lv_color_hex(0x89F5FF), 0);
-    lv_obj_set_style_text_letter_space(splash_label, 6, 0);
+    lv_obj_set_style_text_letter_space(splash_label, 7, 0);
     lv_obj_set_style_text_opa(splash_label, LV_OPA_0, 0);
-    lv_obj_align(splash_label, LV_ALIGN_CENTER, 0, -18);
-
-    // Small subtitle requested by user
-    splash_subtitle = lv_label_create(splash_frame_box);
-    lv_label_set_text(splash_subtitle, "JanOS x Tab5");
-    lv_obj_set_style_text_font(splash_subtitle, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(splash_subtitle, lv_color_hex(0xC6D9EF), 0);
-    lv_obj_set_style_text_opa(splash_subtitle, LV_OPA_0, 0);
-    lv_obj_align(splash_subtitle, LV_ALIGN_CENTER, 0, 34);
+    lv_obj_align(splash_label, LV_ALIGN_BOTTOM_MID, 0, -72);
 
     // Start cyber intro animation timer (40ms = 25 FPS)
     splash_timer = lv_timer_create(splash_timer_cb, SPLASH_TICK_MS, NULL);

@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "M5MonsterC5-Tab5",
-    "project_version":    "v1.0.8-18-ga0d8c87-dirty",
+    "project_version":    "v1.0.8-19-g441c49d-dirty",
     "project_path":       "/Users/dominikhrycaj/Documents/GitHub/Tab5UI",
     "idf_path":           "/Users/dominikhrycaj/.espressif/v5.4.3/esp-idf",
     "build_dir":          "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/build",
@@ -1450,7 +1450,7 @@
             "managed_reqs": [],
             "managed_priv_reqs": [ "espressif__esp_hosted", "espressif__esp_lcd_ili9881c", "espressif__esp_wifi_remote", "espressif__iot_usbh_cdc", "espressif__usb" ],
             "file": "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/build/esp-idf/main/libmain.a",
-            "sources": [ "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/main/ui_components.c", "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/main/ui_theme.c", "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/main/main.c" ],
+            "sources": [ "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/main/ui_components.c", "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/main/ui_theme.c", "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/main/main.c", "/Users/dominikhrycaj/Documents/GitHub/Tab5UI/main/splash_bg.c" ],
             "include_dirs": [ "." ]
         },
         "mbedtls": {
