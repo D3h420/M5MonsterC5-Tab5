@@ -4953,12 +4953,22 @@ static void tab_click_cb(lv_event_t *e)
     if (tab_id == current_tab) return;  // Already on this tab
     
     ESP_LOGI(TAG, "Switching from tab %d to tab %lu", current_tab, (unsigned long)tab_id);
+
+    lv_display_t *disp = lv_display_get_default();
+    bool invalidation_was_enabled = false;
+    if (disp) {
+        invalidation_was_enabled = lv_display_is_invalidation_enabled(disp);
+        if (invalidation_was_enabled) {
+            lv_display_enable_invalidation(disp, false);
+        }
+    }
     
     // *** SAVE current context BEFORE switching ***
     tab_context_t *old_ctx = get_current_ctx();
     save_globals_to_tab_context(old_ctx);
     
-    // Hide current container (don't delete - preserve state)
+    // Hide previous container while invalidation is locked to avoid
+    // showing intermediate frames (visible blink).
     lv_obj_t *old_container = get_current_tab_container();
     if (old_container) {
         lv_obj_add_flag(old_container, LV_OBJ_FLAG_HIDDEN);
@@ -4983,6 +4993,10 @@ static void tab_click_cb(lv_event_t *e)
             show_internal_tiles();
         }
         update_live_dashboard_for_ctx(new_ctx);
+        if (invalidation_was_enabled && disp) {
+            lv_display_enable_invalidation(disp, true);
+        }
+        lv_obj_invalidate(lv_scr_act());
         return;
     }
 
@@ -4996,6 +5010,10 @@ static void tab_click_cb(lv_event_t *e)
             mbus_ctx.current_visible_page = mbus_ctx.tiles;
         }
         update_live_dashboard_for_ctx(new_ctx);
+        if (invalidation_was_enabled && disp) {
+            lv_display_enable_invalidation(disp, true);
+        }
+        lv_obj_invalidate(lv_scr_act());
         return;
     }
 
@@ -5009,6 +5027,10 @@ static void tab_click_cb(lv_event_t *e)
         new_ctx->current_visible_page = new_ctx->tiles;
     }
     update_live_dashboard_for_ctx(new_ctx);
+    if (invalidation_was_enabled && disp) {
+        lv_display_enable_invalidation(disp, true);
+    }
+    lv_obj_invalidate(lv_scr_act());
 }
 
 static void style_tab_container_common(lv_obj_t *container, lv_coord_t height)
@@ -18338,11 +18360,12 @@ static bool try_build_theme_icon_image(lv_obj_t *icon_row, const char *src, lv_c
     lv_obj_set_size(icon_img, icon_box, icon_box);
     lv_image_set_inner_align(icon_img, LV_IMAGE_ALIGN_CONTAIN);
     lv_image_set_antialias(icon_img, true);
+    lv_obj_set_style_image_opa(icon_img, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_ANY);
     if (active_theme_icon_tint_enabled && active_theme_icon_tint_opa > 0) {
-        lv_obj_set_style_image_recolor(icon_img, active_theme_icon_tint, 0);
-        lv_obj_set_style_image_recolor_opa(icon_img, active_theme_icon_tint_opa, 0);
+        lv_obj_set_style_image_recolor(icon_img, active_theme_icon_tint, LV_PART_MAIN | LV_STATE_ANY);
+        lv_obj_set_style_image_recolor_opa(icon_img, active_theme_icon_tint_opa, LV_PART_MAIN | LV_STATE_ANY);
     } else {
-        lv_obj_set_style_image_recolor_opa(icon_img, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_image_recolor_opa(icon_img, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_ANY);
     }
     lv_obj_center(icon_img);
     return true;
