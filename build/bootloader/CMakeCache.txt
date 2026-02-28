@@ -263,7 +263,7 @@ IGNORE_EXTRA_COMPONENT:UNINITIALIZED=
 PROJECT_SOURCE_DIR:UNINITIALIZED=/Users/dominikhrycaj/Documents/GitHub/Tab5UI
 
 //No help, variable specified on the command line.
-PYTHON:UNINITIALIZED=/Users/dominikhrycaj/.espressif/tools/python/v5.4.3/venv/bin/python
+PYTHON:UNINITIALIZED=python
 
 //No help, variable specified on the command line.
 PYTHON_DEPS_CHECKED:UNINITIALIZED=1
