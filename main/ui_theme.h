@@ -29,6 +29,14 @@ typedef enum {
 } ui_color_token_t;
 
 typedef enum {
+    UI_THEME_FONT_DEFAULT = 0,
+    UI_THEME_FONT_COMPACT,
+    UI_THEME_FONT_LARGE,
+    UI_THEME_FONT_TERMINAL,
+    UI_THEME_FONT_COUNT
+} ui_theme_font_profile_t;
+
+typedef enum {
     UI_SPACE_4 = 4,
     UI_SPACE_8 = 8,
     UI_SPACE_12 = 12,
@@ -70,6 +78,10 @@ bool ui_theme_is_dark_mode(void);
 void ui_theme_set_custom_palette(const lv_color_t palette[UI_COLOR_COUNT]);
 void ui_theme_clear_custom_palette(void);
 void ui_theme_get_default_palette(lv_color_t out_palette[UI_COLOR_COUNT]);
+void ui_theme_set_font_profile(ui_theme_font_profile_t profile);
+ui_theme_font_profile_t ui_theme_get_font_profile(void);
+const char *ui_theme_font_profile_name(ui_theme_font_profile_t profile);
+bool ui_theme_font_profile_from_name(const char *name, ui_theme_font_profile_t *out_profile);
 
 lv_color_t ui_theme_color(ui_color_token_t token);
 

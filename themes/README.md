@@ -22,9 +22,17 @@ Supported keys:
 - `success`, `warning`, `error`, `info`
 - `modal_overlay`
 - `outline_color`
+- `font` (`default`, `compact`, `large`, `terminal`)
 - `background_image` (relative file path in this folder, e.g. `bg.jpg`)
 
 Color format: `RRGGBB`, `#RRGGBB`, or `0xRRGGBB`
+
+Font presets:
+- `default` - baseline UI typography.
+- `compact` - smaller, denser typography.
+- `large` - larger typography for readability.
+- `terminal` - terminal-like profile.  
+  Uses `UNSCII` fonts if enabled in firmware config; otherwise falls back to compact Montserrat.
 
 ## 2) `layout.json`
 
@@ -104,3 +112,5 @@ See:
 - `themes/example_ocean/theme.ini`
 - `themes/example_ocean/layout.json`
 - `themes/example_ocean/icons/` (full icon filename template ready to replace)
+- `themes/example_terminal/theme.ini`
+- `themes/example_terminal/layout.json`

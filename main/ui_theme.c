@@ -1,5 +1,6 @@
 #include "ui_theme.h"
 #include <string.h>
+#include <ctype.h>
 
 static bool s_theme_inited = false;
 static bool s_dark_mode = true;
@@ -48,6 +49,84 @@ static lv_color_t s_palette[UI_COLOR_COUNT];
 static lv_color_t s_custom_palette[UI_COLOR_COUNT];
 
 static ui_theme_styles_t s_styles;
+static ui_theme_font_profile_t s_font_profile = UI_THEME_FONT_DEFAULT;
+
+typedef struct {
+    const lv_font_t *theme_base;
+    const lv_font_t *h1;
+    const lv_font_t *h2;
+    const lv_font_t *subtitle;
+    const lv_font_t *body;
+    const lv_font_t *label;
+    const lv_font_t *button;
+    const lv_font_t *chip;
+} ui_theme_font_pack_t;
+
+#if LV_FONT_UNSCII_16
+#define UI_THEME_TERMINAL_THEME_BASE (&lv_font_unscii_16)
+#define UI_THEME_TERMINAL_SUBTITLE (&lv_font_unscii_16)
+#define UI_THEME_TERMINAL_BODY (&lv_font_unscii_16)
+#define UI_THEME_TERMINAL_LABEL (&lv_font_unscii_8)
+#define UI_THEME_TERMINAL_BUTTON (&lv_font_unscii_16)
+#define UI_THEME_TERMINAL_CHIP (&lv_font_unscii_8)
+#else
+#define UI_THEME_TERMINAL_THEME_BASE (&lv_font_montserrat_14)
+#define UI_THEME_TERMINAL_SUBTITLE (&lv_font_montserrat_18)
+#define UI_THEME_TERMINAL_BODY (&lv_font_montserrat_16)
+#define UI_THEME_TERMINAL_LABEL (&lv_font_montserrat_12)
+#define UI_THEME_TERMINAL_BUTTON (&lv_font_montserrat_16)
+#define UI_THEME_TERMINAL_CHIP (&lv_font_montserrat_10)
+#endif
+
+static const ui_theme_font_pack_t s_font_packs[UI_THEME_FONT_COUNT] = {
+    [UI_THEME_FONT_DEFAULT] = {
+        .theme_base = &lv_font_montserrat_18,
+        .h1 = &lv_font_montserrat_44,
+        .h2 = &lv_font_montserrat_28,
+        .subtitle = &lv_font_montserrat_22,
+        .body = &lv_font_montserrat_20,
+        .label = &lv_font_montserrat_16,
+        .button = &lv_font_montserrat_20,
+        .chip = &lv_font_montserrat_12,
+    },
+    [UI_THEME_FONT_COMPACT] = {
+        .theme_base = &lv_font_montserrat_16,
+        .h1 = &lv_font_montserrat_38,
+        .h2 = &lv_font_montserrat_24,
+        .subtitle = &lv_font_montserrat_20,
+        .body = &lv_font_montserrat_18,
+        .label = &lv_font_montserrat_14,
+        .button = &lv_font_montserrat_18,
+        .chip = &lv_font_montserrat_10,
+    },
+    [UI_THEME_FONT_LARGE] = {
+        .theme_base = &lv_font_montserrat_20,
+        .h1 = &lv_font_montserrat_48,
+        .h2 = &lv_font_montserrat_32,
+        .subtitle = &lv_font_montserrat_24,
+        .body = &lv_font_montserrat_22,
+        .label = &lv_font_montserrat_18,
+        .button = &lv_font_montserrat_22,
+        .chip = &lv_font_montserrat_12,
+    },
+    [UI_THEME_FONT_TERMINAL] = {
+        .theme_base = UI_THEME_TERMINAL_THEME_BASE,
+        .h1 = &lv_font_montserrat_36,
+        .h2 = &lv_font_montserrat_24,
+        .subtitle = UI_THEME_TERMINAL_SUBTITLE,
+        .body = UI_THEME_TERMINAL_BODY,
+        .label = UI_THEME_TERMINAL_LABEL,
+        .button = UI_THEME_TERMINAL_BUTTON,
+        .chip = UI_THEME_TERMINAL_CHIP,
+    },
+};
+
+static const char *s_font_profile_names[UI_THEME_FONT_COUNT] = {
+    [UI_THEME_FONT_DEFAULT] = "default",
+    [UI_THEME_FONT_COMPACT] = "compact",
+    [UI_THEME_FONT_LARGE] = "large",
+    [UI_THEME_FONT_TERMINAL] = "terminal",
+};
 
 static const lv_style_prop_t s_button_transition_props[] = {
     LV_STYLE_BG_COLOR,
@@ -58,6 +137,29 @@ static const lv_style_prop_t s_button_transition_props[] = {
 };
 
 static lv_style_transition_dsc_t s_button_transition;
+
+static const ui_theme_font_pack_t *active_font_pack(void)
+{
+    if ((int)s_font_profile < 0 || s_font_profile >= UI_THEME_FONT_COUNT) {
+        return &s_font_packs[UI_THEME_FONT_DEFAULT];
+    }
+    return &s_font_packs[s_font_profile];
+}
+
+static bool str_eq_icase(const char *a, const char *b)
+{
+    if (!a || !b) {
+        return false;
+    }
+    while (*a && *b) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+            return false;
+        }
+        ++a;
+        ++b;
+    }
+    return *a == '\0' && *b == '\0';
+}
 
 static void update_palette_from_mode(void)
 {
@@ -90,7 +192,11 @@ static void reset_all_styles(void)
     lv_style_reset(&s_styles.modal_card);
 }
 
-static void init_button_style(lv_style_t *style, lv_color_t bg, lv_color_t border, lv_color_t text)
+static void init_button_style(lv_style_t *style,
+                              lv_color_t bg,
+                              lv_color_t border,
+                              lv_color_t text,
+                              const lv_font_t *font)
 {
     lv_style_init(style);
     lv_style_set_bg_opa(style, 188);
@@ -107,7 +213,7 @@ static void init_button_style(lv_style_t *style, lv_color_t bg, lv_color_t borde
     lv_style_set_pad_bottom(style, UI_SPACE_12);
     lv_style_set_min_height(style, UI_TOUCH_TARGET_PRIMARY);
     lv_style_set_text_color(style, text);
-    lv_style_set_text_font(style, &lv_font_montserrat_20);
+    lv_style_set_text_font(style, font ? font : &lv_font_montserrat_20);
     lv_style_set_shadow_color(style, lv_color_black());
     lv_style_set_shadow_width(style, 7);
     lv_style_set_shadow_opa(style, LV_OPA_10);
@@ -131,13 +237,15 @@ void ui_theme_init(lv_display_t *disp)
         reset_all_styles();
     }
 
+    const ui_theme_font_pack_t *fonts = active_font_pack();
+
     if (disp != NULL) {
         lv_theme_t *theme = lv_theme_default_init(
             disp,
             s_palette[UI_COLOR_ACCENT_PRIMARY],
             s_palette[UI_COLOR_ACCENT_SECONDARY],
             s_dark_mode,
-            &lv_font_montserrat_18);
+            fonts->theme_base);
         if (theme != NULL) {
             lv_display_set_theme(disp, theme);
         }
@@ -228,19 +336,22 @@ void ui_theme_init(lv_display_t *disp)
         &s_styles.button_primary,
         s_palette[UI_COLOR_ACCENT_PRIMARY],
         lv_color_lighten(s_palette[UI_COLOR_ACCENT_PRIMARY], 10),
-        s_palette[UI_COLOR_TEXT_PRIMARY]);
+        s_palette[UI_COLOR_TEXT_PRIMARY],
+        fonts->button);
 
     init_button_style(
         &s_styles.button_secondary,
         s_palette[UI_COLOR_SURFACE_ALT],
         s_palette[UI_COLOR_BORDER],
-        s_palette[UI_COLOR_TEXT_PRIMARY]);
+        s_palette[UI_COLOR_TEXT_PRIMARY],
+        fonts->button);
 
     init_button_style(
         &s_styles.button_danger,
         s_palette[UI_COLOR_ERROR],
         lv_color_lighten(s_palette[UI_COLOR_ERROR], 10),
-        s_palette[UI_COLOR_TEXT_PRIMARY]);
+        s_palette[UI_COLOR_TEXT_PRIMARY],
+        fonts->button);
 
     lv_style_init(&s_styles.button_pressed);
     lv_style_set_translate_y(&s_styles.button_pressed, 1);
@@ -282,7 +393,7 @@ void ui_theme_init(lv_display_t *disp)
     lv_style_set_pad_top(&s_styles.chip, UI_SPACE_4);
     lv_style_set_pad_bottom(&s_styles.chip, UI_SPACE_4);
     lv_style_set_text_color(&s_styles.chip, s_palette[UI_COLOR_TEXT_SECONDARY]);
-    lv_style_set_text_font(&s_styles.chip, &lv_font_montserrat_12);
+    lv_style_set_text_font(&s_styles.chip, fonts->chip);
 
     lv_style_init(&s_styles.metric_card);
     lv_style_set_bg_opa(&s_styles.metric_card, 230);
@@ -417,22 +528,22 @@ lv_color_t ui_theme_color(ui_color_token_t token)
 
 const lv_font_t *ui_theme_font_h1(void)
 {
-    return &lv_font_montserrat_44;
+    return active_font_pack()->h1;
 }
 
 const lv_font_t *ui_theme_font_h2(void)
 {
-    return &lv_font_montserrat_28;
+    return active_font_pack()->h2;
 }
 
 const lv_font_t *ui_theme_font_body(void)
 {
-    return &lv_font_montserrat_20;
+    return active_font_pack()->body;
 }
 
 const lv_font_t *ui_theme_font_label(void)
 {
-    return &lv_font_montserrat_16;
+    return active_font_pack()->label;
 }
 
 const ui_theme_styles_t *ui_theme_styles(void)
@@ -557,7 +668,7 @@ void ui_theme_style_title(lv_obj_t *label)
 void ui_theme_style_subtitle(lv_obj_t *label)
 {
     if (!label) return;
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_font(label, active_font_pack()->subtitle, 0);
     lv_obj_set_style_text_color(label, s_palette[UI_COLOR_TEXT_SECONDARY], 0);
     lv_obj_set_style_text_opa(label, 205, 0);
 }
@@ -584,4 +695,67 @@ void ui_theme_style_muted(lv_obj_t *label)
     lv_obj_set_style_text_font(label, ui_theme_font_label(), 0);
     lv_obj_set_style_text_color(label, s_palette[UI_COLOR_TEXT_MUTED], 0);
     lv_obj_set_style_text_opa(label, 185, 0);
+}
+
+void ui_theme_set_font_profile(ui_theme_font_profile_t profile)
+{
+    if ((int)profile < 0 || profile >= UI_THEME_FONT_COUNT) {
+        profile = UI_THEME_FONT_DEFAULT;
+    }
+
+    if (s_font_profile == profile && s_theme_inited) {
+        return;
+    }
+
+    s_font_profile = profile;
+    if (s_theme_inited) {
+        ui_theme_init(s_theme_display);
+        lv_obj_report_style_change(NULL);
+    }
+}
+
+ui_theme_font_profile_t ui_theme_get_font_profile(void)
+{
+    return s_font_profile;
+}
+
+const char *ui_theme_font_profile_name(ui_theme_font_profile_t profile)
+{
+    if ((int)profile < 0 || profile >= UI_THEME_FONT_COUNT) {
+        return s_font_profile_names[UI_THEME_FONT_DEFAULT];
+    }
+    return s_font_profile_names[profile];
+}
+
+bool ui_theme_font_profile_from_name(const char *name, ui_theme_font_profile_t *out_profile)
+{
+    if (!name || !name[0] || !out_profile) {
+        return false;
+    }
+
+    for (int i = 0; i < UI_THEME_FONT_COUNT; ++i) {
+        if (str_eq_icase(name, s_font_profile_names[i])) {
+            *out_profile = (ui_theme_font_profile_t)i;
+            return true;
+        }
+    }
+
+    if (str_eq_icase(name, "normal")) {
+        *out_profile = UI_THEME_FONT_DEFAULT;
+        return true;
+    }
+    if (str_eq_icase(name, "dense")) {
+        *out_profile = UI_THEME_FONT_COMPACT;
+        return true;
+    }
+    if (str_eq_icase(name, "big")) {
+        *out_profile = UI_THEME_FONT_LARGE;
+        return true;
+    }
+    if (str_eq_icase(name, "linux")) {
+        *out_profile = UI_THEME_FONT_TERMINAL;
+        return true;
+    }
+
+    return false;
 }

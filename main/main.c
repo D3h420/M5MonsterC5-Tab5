@@ -635,6 +635,7 @@ static lv_obj_t *theme_popup_overlay = NULL;
 static lv_obj_t *theme_popup_obj = NULL;
 static lv_obj_t *theme_popup_dropdown = NULL;
 static lv_obj_t *theme_popup_status = NULL;
+static lv_obj_t *theme_popup_dashboard_switch = NULL;
 
 #define BUTTON_OUTLINE_THEME_COUNT 4
 #define MAX_REGISTERED_TILE_BTNS 320
@@ -678,7 +679,10 @@ typedef struct {
     lv_obj_t *dashboard_spacer;
     lv_obj_t *dashboard_panel;
     lv_obj_t *tiles[MAX_THEME_BINDING_TILES];
+    lv_coord_t default_tile_w[MAX_THEME_BINDING_TILES];
+    lv_coord_t default_tile_h[MAX_THEME_BINDING_TILES];
     size_t tile_count;
+    bool defaults_captured;
     bool is_internal;
 } theme_tile_binding_t;
 
@@ -687,6 +691,8 @@ typedef struct {
     char display_name[MAX_THEME_NAME_LEN];
     char theme_dir[MAX_THEME_PATH_LEN];
     lv_color_t palette[UI_COLOR_COUNT];
+    bool has_font_profile;
+    ui_theme_font_profile_t font_profile;
     bool has_outline_color;
     lv_color_t outline_color;
     bool has_background_image;
@@ -700,6 +706,7 @@ typedef struct {
 static sd_theme_entry_t sd_themes[MAX_SD_THEMES];
 static size_t sd_theme_count = 0;
 static char active_theme_id[MAX_THEME_NAME_LEN] = "default";
+static bool dashboard_enabled_preference = true;
 static bool active_theme_has_background_image = false;
 static char active_theme_background_image[MAX_THEME_PATH_LEN];
 static char active_theme_uart_icon_paths[UART_MAIN_TILE_COUNT][MAX_THEME_PATH_LEN];
@@ -787,8 +794,59 @@ static void reset_theme_binding(theme_tile_binding_t *binding)
     binding->dashboard_spacer = NULL;
     binding->dashboard_panel = NULL;
     binding->tile_count = 0;
+    binding->defaults_captured = false;
     for (size_t i = 0; i < MAX_THEME_BINDING_TILES; ++i) {
         binding->tiles[i] = NULL;
+        binding->default_tile_w[i] = 0;
+        binding->default_tile_h[i] = 0;
+    }
+}
+
+static void capture_theme_binding_default_sizes(theme_tile_binding_t *binding)
+{
+    if (!binding || binding->defaults_captured) {
+        return;
+    }
+
+    size_t count = binding->tile_count;
+    if (count > MAX_THEME_BINDING_TILES) {
+        count = MAX_THEME_BINDING_TILES;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        lv_obj_t *tile = binding->tiles[i];
+        if (!tile || !lv_obj_is_valid(tile)) {
+            continue;
+        }
+        binding->default_tile_w[i] = lv_obj_get_width(tile);
+        binding->default_tile_h[i] = lv_obj_get_height(tile);
+    }
+
+    binding->defaults_captured = true;
+}
+
+static void restore_theme_binding_default_sizes(theme_tile_binding_t *binding)
+{
+    if (!binding || !binding->defaults_captured) {
+        return;
+    }
+
+    size_t count = binding->tile_count;
+    if (count > MAX_THEME_BINDING_TILES) {
+        count = MAX_THEME_BINDING_TILES;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        lv_obj_t *tile = binding->tiles[i];
+        if (!tile || !lv_obj_is_valid(tile)) {
+            continue;
+        }
+
+        lv_coord_t w = binding->default_tile_w[i];
+        lv_coord_t h = binding->default_tile_h[i];
+        if (w > 0 && h > 0) {
+            lv_obj_set_size(tile, w, h);
+        }
     }
 }
 
@@ -1269,13 +1327,17 @@ static void theme_back_btn_event_cb(lv_event_t *e);
 static void close_theme_popup(void);
 static void refresh_sd_themes_cache(void);
 static void apply_selected_theme_index(size_t idx, bool persist);
+static size_t find_theme_index_by_id(const char *theme_id);
 static bool parse_layout_json_file(const char *layout_path, theme_layout_profile_t *out_layout);
 static void apply_theme_assets_to_all_bindings(void);
 static void apply_theme_layout_to_binding(theme_tile_binding_t *binding);
 static void apply_theme_background_to_tile_root(lv_obj_t *tile_root);
+static void apply_theme_icons_to_binding(theme_tile_binding_t *binding);
+static void apply_theme_text_to_binding(theme_tile_binding_t *binding);
 static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ctx);
 static void update_live_dashboard_for_ctx(tab_context_t *ctx);
 static int count_local_handshake_files(void);
+static int count_remote_handshake_files_for_tab(tab_id_t tab);
 static void refresh_dashboard_handshake_cache(tab_context_t *ctx, tab_id_t tab);
 static void update_dashboard_quotes_all(void);
 static void dashboard_quote_timer_cb(lv_timer_t *timer);
@@ -3575,7 +3637,7 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
 
             lv_obj_t *title_label = lv_label_create(tile);
             lv_label_set_text(title_label, title_text);
-            lv_obj_set_style_text_font(title_label, &lv_font_montserrat_22, 0);
+            lv_obj_set_style_text_font(title_label, ui_theme_font_body(), 0);
             lv_obj_set_style_text_color(title_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
             lv_obj_set_style_text_opa(title_label, 248, 0);
             lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -3584,7 +3646,7 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
 
             lv_obj_t *subtitle_label = lv_label_create(tile);
             lv_label_set_text(subtitle_label, subtitle_text);
-            lv_obj_set_style_text_font(subtitle_label, &lv_font_montserrat_22, 0);
+            lv_obj_set_style_text_font(subtitle_label, ui_theme_font_body(), 0);
             lv_obj_set_style_text_color(subtitle_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
             lv_obj_set_style_text_opa(subtitle_label, 248, 0);
             lv_obj_set_style_text_align(subtitle_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -3593,7 +3655,7 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
         } else {
             lv_obj_t *text_label = lv_label_create(tile);
             lv_label_set_text(text_label, text);
-            lv_obj_set_style_text_font(text_label, &lv_font_montserrat_22, 0);
+            lv_obj_set_style_text_font(text_label, ui_theme_font_body(), 0);
             lv_obj_set_style_text_color(text_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
             lv_obj_set_style_text_opa(text_label, 248, 0);
             lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -3657,7 +3719,7 @@ static lv_obj_t *create_small_tile(lv_obj_t *parent, const char *icon, const cha
     if (text) {
         lv_obj_t *text_label = lv_label_create(tile);
         lv_label_set_text(text_label, text);
-        lv_obj_set_style_text_font(text_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(text_label, ui_theme_font_label(), 0);
         lv_obj_set_style_text_color(text_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
         lv_obj_set_style_text_opa(text_label, 235, 0);
         lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -3743,6 +3805,58 @@ static int count_local_handshake_files(void)
     return count;
 }
 
+static int count_remote_handshake_files_for_tab(tab_id_t tab)
+{
+    if (tab_is_internal(tab)) {
+        return -1;
+    }
+
+    uart_port_t uart_port = uart_port_for_tab(tab);
+    if (!(tab == TAB_USB && uart_port == UART_NUM)) {
+        uart_flush_input(uart_port);
+    }
+
+    const char *cmd = "list_dir /sdcard/lab/handshakes";
+    transport_write_bytes_tab(tab, uart_port, cmd, strlen(cmd));
+    transport_write_bytes_tab(tab, uart_port, "\r\n", 2);
+
+    char rx_buffer[4096];
+    int total_len = 0;
+    int retries = 8;
+    int empty_reads = 0;
+
+    while (retries-- > 0 && total_len < (int)sizeof(rx_buffer) - 1 && empty_reads < 3) {
+        int len = transport_read_bytes_tab(tab, uart_port,
+                                           rx_buffer + total_len,
+                                           sizeof(rx_buffer) - total_len - 1,
+                                           pdMS_TO_TICKS(120));
+        if (len > 0) {
+            total_len += len;
+            empty_reads = 0;
+        } else {
+            empty_reads++;
+        }
+    }
+    rx_buffer[total_len] = '\0';
+
+    if (total_len <= 0) {
+        return -1;
+    }
+
+    int count = 0;
+    char *line = strtok(rx_buffer, "\n\r");
+    while (line != NULL) {
+        // Count lines that look like listed capture files.
+        char *pcap_ext = strstr(line, ".pcap");
+        if (pcap_ext != NULL && pcap_ext[5] == '\0') {
+            count++;
+        }
+        line = strtok(NULL, "\n\r");
+    }
+
+    return count;
+}
+
 static lv_color_t wifi_rssi_quality_color(int rssi)
 {
     if (rssi >= -67) {
@@ -3795,22 +3909,37 @@ static void refresh_dashboard_handshake_cache(tab_context_t *ctx, tab_id_t tab)
         return;
     }
 
-    // For transport tabs (Grove/USB/MBus) handshake count is refreshed from remote
-    // command responses and stored in ctx->dashboard_handshake_count elsewhere.
-    if (tab != TAB_INTERNAL) {
-        return;
-    }
-
     int64_t now_us = esp_timer_get_time();
     if (ctx->dashboard_last_local_handshake_refresh_us > 0 &&
         (now_us - ctx->dashboard_last_local_handshake_refresh_us) < DASHBOARD_HANDSHAKE_REFRESH_US) {
         return;
     }
-    ctx->dashboard_last_local_handshake_refresh_us = now_us;
 
-    int local_count = count_local_handshake_files();
-    if (local_count >= 0) {
-        ctx->dashboard_handshake_count = local_count;
+    if (tab == TAB_INTERNAL) {
+        ctx->dashboard_last_local_handshake_refresh_us = now_us;
+        int local_count = count_local_handshake_files();
+        if (local_count >= 0) {
+            ctx->dashboard_handshake_count = local_count;
+            ctx->dashboard_handshake_known = true;
+        } else if (!ctx->dashboard_handshake_known) {
+            ctx->dashboard_handshake_count = -1;
+        }
+        return;
+    }
+
+    // For transport tabs refresh from the active transport only while on main tiles.
+    // This avoids clashing with long-running actions on subpages.
+    if (ctx != get_current_ctx() || ctx->current_visible_page != ctx->tiles) {
+        return;
+    }
+    if (scan_in_progress || ctx->scan_in_progress) {
+        return;
+    }
+
+    ctx->dashboard_last_local_handshake_refresh_us = now_us;
+    int remote_count = count_remote_handshake_files_for_tab(tab);
+    if (remote_count >= 0) {
+        ctx->dashboard_handshake_count = remote_count;
         ctx->dashboard_handshake_known = true;
     } else if (!ctx->dashboard_handshake_known) {
         ctx->dashboard_handshake_count = -1;
@@ -4237,7 +4366,7 @@ static void update_live_dashboard_for_ctx(tab_context_t *ctx)
             lv_label_set_text(ctx->dashboard_clock_meta, "No SD");
             lv_obj_set_style_text_color(ctx->dashboard_clock_meta, ui_theme_color(UI_COLOR_ERROR), 0);
         } else if (ctx->dashboard_handshake_known && ctx->dashboard_handshake_count >= 0) {
-            lv_label_set_text_fmt(ctx->dashboard_clock_meta, "%d .pcap", ctx->dashboard_handshake_count);
+            lv_label_set_text_fmt(ctx->dashboard_clock_meta, "%dx .pcap", ctx->dashboard_handshake_count);
             lv_obj_set_style_text_color(ctx->dashboard_clock_meta, ui_theme_color(UI_COLOR_ACCENT_PRIMARY), 0);
         } else {
             lv_label_set_text(ctx->dashboard_clock_meta, "Sync pending");
@@ -8225,6 +8354,8 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
         if (binding) {
             apply_theme_background_to_tile_root(binding->root);
             apply_theme_layout_to_binding(binding);
+            apply_theme_icons_to_binding(binding);
+            apply_theme_text_to_binding(binding);
         }
         update_live_dashboard_for_ctx(ctx);
         return;
@@ -8301,8 +8432,11 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
         for (size_t i = 0; i < UART_MAIN_TILE_COUNT; ++i) {
             binding->tiles[i] = main_tiles[i];
         }
+        capture_theme_binding_default_sizes(binding);
         apply_theme_background_to_tile_root(binding->root);
         apply_theme_layout_to_binding(binding);
+        apply_theme_icons_to_binding(binding);
+        apply_theme_text_to_binding(binding);
     }
 
     update_live_dashboard_for_ctx(ctx);
@@ -8395,6 +8529,8 @@ static void show_internal_tiles(void)
         if (binding) {
             apply_theme_background_to_tile_root(binding->root);
             apply_theme_layout_to_binding(binding);
+            apply_theme_icons_to_binding(binding);
+            apply_theme_text_to_binding(binding);
         }
         update_live_dashboard_for_ctx(&internal_ctx);
         return;
@@ -8446,8 +8582,11 @@ static void show_internal_tiles(void)
         binding->tile_count = INTERNAL_MAIN_TILE_COUNT;
         binding->tiles[0] = settings_tile;
         binding->tiles[1] = portal_tile;
+        capture_theme_binding_default_sizes(binding);
         apply_theme_background_to_tile_root(binding->root);
         apply_theme_layout_to_binding(binding);
+        apply_theme_icons_to_binding(binding);
+        apply_theme_text_to_binding(binding);
     }
     update_live_dashboard_for_ctx(&internal_ctx);
     
@@ -17841,6 +17980,7 @@ static __attribute__((unused)) lv_obj_t *settings_popup_obj = NULL;
 #define NVS_KEY_SCREEN_BRIGHT   "scr_bright"
 #define NVS_KEY_BUTTON_OUTLINE  "btn_outline"
 #define NVS_KEY_ACTIVE_THEME    "theme_id"
+#define NVS_KEY_DASHBOARD       "dash_en"
 
 // Load Red Team setting from NVS (called on startup)
 // Note: Device detection is automatic via ping/pong
@@ -17920,6 +18060,17 @@ static void load_screen_settings_from_nvs(void)
                      button_outline_theme_name(buttons_outline_theme));
         }
 
+        uint8_t dashboard_setting = 1;
+        err = nvs_get_u8(nvs, NVS_KEY_DASHBOARD, &dashboard_setting);
+        if (err == ESP_OK) {
+            dashboard_enabled_preference = (dashboard_setting != 0);
+            ESP_LOGI(TAG, "Loaded Dashboard preference from NVS: %s",
+                     dashboard_enabled_preference ? "ON" : "OFF");
+        } else {
+            dashboard_enabled_preference = true;
+            ESP_LOGI(TAG, "No Dashboard preference in NVS, using default: ON");
+        }
+
         ui_theme_set_dark_mode(true);
 
         refresh_sd_themes_cache();
@@ -17931,17 +18082,12 @@ static void load_screen_settings_from_nvs(void)
             snprintf(active_theme_id, sizeof(active_theme_id), "%s", "default");
             ESP_LOGI(TAG, "No active theme in NVS, using default");
         }
-        apply_selected_theme_index(0, false);
-        for (size_t i = 0; i < sd_theme_count; ++i) {
-            if (strcmp(sd_themes[i].id, active_theme_id) == 0) {
-                apply_selected_theme_index(i, false);
-                break;
-            }
-        }
+        apply_selected_theme_index(find_theme_index_by_id(active_theme_id), false);
         
         nvs_close(nvs);
     } else {
         ESP_LOGI(TAG, "NVS not available, using default screen settings");
+        dashboard_enabled_preference = true;
         ui_theme_set_dark_mode(true);
         refresh_sd_themes_cache();
         apply_selected_theme_index(0, false);
@@ -17975,6 +18121,20 @@ static void save_screen_brightness_to_nvs(uint8_t brightness)
         ESP_LOGI(TAG, "Saved Screen Brightness to NVS: %d%%", brightness);
     } else {
         ESP_LOGE(TAG, "Failed to open NVS for writing Screen Brightness: %s", esp_err_to_name(err));
+    }
+}
+
+static void save_dashboard_pref_to_nvs(bool enabled)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_DASHBOARD, enabled ? 1 : 0);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+        ESP_LOGI(TAG, "Saved Dashboard preference to NVS: %s", enabled ? "ON" : "OFF");
+    } else {
+        ESP_LOGE(TAG, "Failed to open NVS for writing Dashboard preference: %s", esp_err_to_name(err));
     }
 }
 
@@ -18015,6 +18175,24 @@ static void apply_theme_background_to_tile_root(lv_obj_t *tile_root)
     } else {
         lv_obj_set_style_bg_image_src(tile_root, NULL, 0);
         lv_obj_set_style_bg_image_opa(tile_root, LV_OPA_TRANSP, 0);
+    }
+}
+
+static void apply_dashboard_preference_to_layout(theme_layout_profile_t *layout, const char *theme_id)
+{
+    if (!layout) {
+        return;
+    }
+
+    if (!dashboard_enabled_preference) {
+        layout->dashboard_override = true;
+        layout->dashboard_visible = false;
+        return;
+    }
+
+    if (theme_id && strcmp(theme_id, "default") == 0) {
+        layout->dashboard_override = true;
+        layout->dashboard_visible = true;
     }
 }
 
@@ -18114,13 +18292,58 @@ static const char *active_theme_icon_path_for_tile(bool is_internal, size_t idx)
     return NULL;
 }
 
+static lv_obj_t *find_tile_icon_row(lv_obj_t *tile)
+{
+    if (!binding_obj_valid(tile)) {
+        return NULL;
+    }
+
+    uint32_t child_count = lv_obj_get_child_count(tile);
+    for (uint32_t i = 0; i < child_count; ++i) {
+        lv_obj_t *child = lv_obj_get_child(tile, (int32_t)i);
+        if (!binding_obj_valid(child)) {
+            continue;
+        }
+        if (lv_obj_check_type(child, &lv_label_class)) {
+            continue;
+        }
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_IGNORE_LAYOUT)) {
+            continue;
+        }
+        return child;
+    }
+
+    return NULL;
+}
+
+static bool try_build_theme_icon_image(lv_obj_t *icon_row, const char *src, lv_coord_t icon_box)
+{
+    if (!binding_obj_valid(icon_row) || !src || src[0] == '\0') {
+        return false;
+    }
+
+    lv_image_header_t header;
+    if (lv_image_decoder_get_info(src, &header) != LV_RESULT_OK) {
+        return false;
+    }
+
+    lv_obj_t *icon_img = lv_image_create(icon_row);
+    lv_image_set_src(icon_img, src);
+    lv_obj_set_size(icon_img, icon_box, icon_box);
+    lv_image_set_inner_align(icon_img, LV_IMAGE_ALIGN_CONTAIN);
+    lv_image_set_antialias(icon_img, true);
+    lv_obj_set_style_image_recolor_opa(icon_img, LV_OPA_TRANSP, 0);
+    lv_obj_center(icon_img);
+    return true;
+}
+
 static void rebuild_tile_icon_widget(lv_obj_t *tile, bool is_internal, size_t idx)
 {
     if (!binding_obj_valid(tile)) {
         return;
     }
 
-    lv_obj_t *icon_row = lv_obj_get_child(tile, 0);
+    lv_obj_t *icon_row = find_tile_icon_row(tile);
     if (!binding_obj_valid(icon_row)) {
         return;
     }
@@ -18133,25 +18356,25 @@ static void rebuild_tile_icon_widget(lv_obj_t *tile, bool is_internal, size_t id
     bool used_custom_image = false;
     const char *custom_path = active_theme_icon_path_for_tile(is_internal, idx);
     if (custom_path && custom_path[0] != '\0') {
-        struct stat st = {0};
-        if (stat(custom_path, &st) == 0 && S_ISREG(st.st_mode)) {
-            lv_coord_t icon_box = 56;
-            lv_coord_t tile_h = lv_obj_get_height(tile);
-            if (tile_h > 0) {
-                icon_box = tile_h / 3;
-                if (icon_box < 36) icon_box = 36;
-                if (icon_box > 68) icon_box = 68;
-            }
-
-            lv_obj_t *icon_img = lv_image_create(icon_row);
-            lv_image_set_src(icon_img, custom_path);
-            lv_obj_set_size(icon_img, icon_box, icon_box);
-            lv_image_set_inner_align(icon_img, LV_IMAGE_ALIGN_CONTAIN);
-            lv_image_set_antialias(icon_img, true);
-            lv_obj_set_style_image_recolor_opa(icon_img, LV_OPA_TRANSP, 0);
-            lv_obj_center(icon_img);
-            used_custom_image = true;
+        lv_coord_t icon_box = 56;
+        lv_coord_t tile_h = lv_obj_get_height(tile);
+        if (tile_h > 0) {
+            icon_box = tile_h / 3;
+            if (icon_box < 36) icon_box = 36;
+            if (icon_box > 68) icon_box = 68;
         }
+
+        used_custom_image = try_build_theme_icon_image(icon_row, custom_path, icon_box);
+#if CONFIG_LV_FS_DEFAULT_DRIVER_LETTER > 0
+        if (!used_custom_image && custom_path[1] != ':') {
+            char lvgl_path[MAX_THEME_PATH_LEN + 4];
+            int n = snprintf(lvgl_path, sizeof(lvgl_path), "%c:%s",
+                             (char)CONFIG_LV_FS_DEFAULT_DRIVER_LETTER, custom_path);
+            if (n > 0 && (size_t)n < sizeof(lvgl_path)) {
+                used_custom_image = try_build_theme_icon_image(icon_row, lvgl_path, icon_box);
+            }
+        }
+#endif
     }
 
     if (!used_custom_image) {
@@ -18160,6 +18383,26 @@ static void rebuild_tile_icon_widget(lv_obj_t *tile, bool is_internal, size_t id
         lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_32, 0);
         lv_obj_set_style_text_color(icon_label, fallback_tile_icon_color(is_internal, idx), 0);
         lv_obj_set_style_text_opa(icon_label, 235, 0);
+    }
+}
+
+static void apply_theme_tile_text_fonts_to_tile(lv_obj_t *tile)
+{
+    if (!binding_obj_valid(tile)) {
+        return;
+    }
+
+    uint32_t child_count = lv_obj_get_child_count(tile);
+    for (uint32_t i = 0; i < child_count; ++i) {
+        lv_obj_t *child = lv_obj_get_child(tile, (int32_t)i);
+        if (!binding_obj_valid(child)) {
+            continue;
+        }
+        if (!lv_obj_check_type(child, &lv_label_class)) {
+            continue;
+        }
+
+        lv_obj_set_style_text_font(child, ui_theme_font_body(), 0);
     }
 }
 
@@ -18182,11 +18425,32 @@ static void apply_theme_icons_to_binding(theme_tile_binding_t *binding)
     }
 }
 
+static void apply_theme_text_to_binding(theme_tile_binding_t *binding)
+{
+    if (!binding || binding->tile_count == 0) {
+        return;
+    }
+
+    size_t max_count = binding->is_internal ? INTERNAL_MAIN_TILE_COUNT : UART_MAIN_TILE_COUNT;
+    if (binding->tile_count < max_count) {
+        max_count = binding->tile_count;
+    }
+
+    for (size_t i = 0; i < max_count; ++i) {
+        if (!binding_obj_valid(binding->tiles[i])) {
+            continue;
+        }
+        apply_theme_tile_text_fonts_to_tile(binding->tiles[i]);
+    }
+}
+
 static void apply_theme_layout_to_binding(theme_tile_binding_t *binding)
 {
     if (!binding || !binding_obj_valid(binding->grid)) {
         return;
     }
+
+    capture_theme_binding_default_sizes(binding);
 
     bool section_enabled = binding->is_internal ? active_theme_layout.internal_enabled : active_theme_layout.uart_enabled;
     const theme_tile_layout_t *section = binding->is_internal ? active_theme_layout.internal : active_theme_layout.uart;
@@ -18203,6 +18467,40 @@ static void apply_theme_layout_to_binding(theme_tile_binding_t *binding)
                 break;
             }
         }
+
+        if (can_apply_absolute) {
+            if (binding_obj_valid(binding->root)) {
+                lv_obj_update_layout(binding->root);
+            } else {
+                lv_obj_update_layout(binding->grid);
+            }
+
+            lv_coord_t available_w = lv_obj_get_content_width(binding->grid);
+            if (available_w <= 0) {
+                available_w = lv_obj_get_width(binding->grid);
+            }
+            if (available_w <= 0) {
+                available_w = lv_disp_get_hor_res(NULL) - 32;
+            }
+
+            lv_coord_t max_right = 0;
+            for (size_t i = 0; i < expected_count; ++i) {
+                if (section[i].x < 0 || section[i].y < 0) {
+                    can_apply_absolute = false;
+                    break;
+                }
+                lv_coord_t right = section[i].x + section[i].w;
+                if (right > max_right) {
+                    max_right = right;
+                }
+            }
+
+            if (can_apply_absolute && max_right > available_w) {
+                ESP_LOGW(TAG, "Theme layout exceeds screen width (%d > %d), fallback to default grid",
+                         (int)max_right, (int)available_w);
+                can_apply_absolute = false;
+            }
+        }
     }
 
     if (!can_apply_absolute) {
@@ -18213,11 +18511,14 @@ static void apply_theme_layout_to_binding(theme_tile_binding_t *binding)
         lv_obj_set_style_pad_column(binding->grid, 14, 0);
         lv_obj_set_style_pad_row(binding->grid, 14, 0);
         lv_obj_set_size(binding->grid, lv_pct(100), LV_SIZE_CONTENT);
+        restore_theme_binding_default_sizes(binding);
         for (size_t i = 0; i < binding->tile_count; ++i) {
             if (binding_obj_valid(binding->tiles[i])) {
                 lv_obj_clear_flag(binding->tiles[i], LV_OBJ_FLAG_IGNORE_LAYOUT);
+                lv_obj_set_pos(binding->tiles[i], 0, 0);
             }
         }
+        lv_obj_mark_layout_as_dirty(binding->grid);
         apply_theme_dashboard_visibility(binding);
         return;
     }
@@ -18248,6 +18549,7 @@ static void apply_theme_layout_to_binding(theme_tile_binding_t *binding)
         max_bottom = 1;
     }
     lv_obj_set_size(binding->grid, lv_pct(100), max_bottom);
+    lv_obj_mark_layout_as_dirty(binding->grid);
     apply_theme_dashboard_visibility(binding);
 }
 
@@ -18268,6 +18570,7 @@ static void apply_theme_assets_to_all_bindings(void)
         apply_theme_background_to_tile_root(binding->root);
         apply_theme_layout_to_binding(binding);
         apply_theme_icons_to_binding(binding);
+        apply_theme_text_to_binding(binding);
     }
 }
 
@@ -18729,6 +19032,8 @@ static bool parse_theme_ini_file(const char *config_path,
     copy_capped(out_theme->display_name, sizeof(out_theme->display_name), theme_id);
     copy_capped(out_theme->theme_dir, sizeof(out_theme->theme_dir), theme_dir);
     ui_theme_get_default_palette(out_theme->palette);
+    out_theme->has_font_profile = false;
+    out_theme->font_profile = UI_THEME_FONT_DEFAULT;
     out_theme->has_outline_color = false;
     out_theme->outline_color = lv_color_hex(0xFF2DA6);
 
@@ -18760,6 +19065,15 @@ static bool parse_theme_ini_file(const char *config_path,
             if (parse_hex_color_value(val, &parsed)) {
                 out_theme->has_outline_color = true;
                 out_theme->outline_color = parsed;
+            }
+            continue;
+        }
+
+        if (strcmp(key, "font") == 0 || strcmp(key, "font_profile") == 0) {
+            ui_theme_font_profile_t parsed_profile;
+            if (ui_theme_font_profile_from_name(val, &parsed_profile)) {
+                out_theme->has_font_profile = true;
+                out_theme->font_profile = parsed_profile;
             }
             continue;
         }
@@ -18799,6 +19113,8 @@ static void refresh_sd_themes_cache(void)
     copy_capped(sd_themes[0].id, sizeof(sd_themes[0].id), "default");
     copy_capped(sd_themes[0].display_name, sizeof(sd_themes[0].display_name), "Default");
     copy_capped(sd_themes[0].theme_dir, sizeof(sd_themes[0].theme_dir), THEMES_ROOT_DIR);
+    sd_themes[0].has_font_profile = true;
+    sd_themes[0].font_profile = UI_THEME_FONT_DEFAULT;
     sd_themes[0].has_outline_color = true;
     sd_themes[0].outline_color = lv_color_hex(0xFF2DA6);
     sd_themes[0].has_background_image = false;
@@ -18866,6 +19182,19 @@ static void refresh_sd_themes_cache(void)
     closedir(dir);
 }
 
+static size_t find_theme_index_by_id(const char *theme_id)
+{
+    if (!theme_id || !theme_id[0]) {
+        return 0;
+    }
+    for (size_t i = 0; i < sd_theme_count; ++i) {
+        if (strcmp(sd_themes[i].id, theme_id) == 0) {
+            return i;
+        }
+    }
+    return 0;
+}
+
 static void apply_selected_theme_index(size_t idx, bool persist)
 {
     if (idx >= sd_theme_count) {
@@ -18878,6 +19207,7 @@ static void apply_selected_theme_index(size_t idx, bool persist)
     }
 
     active_theme_layout = theme->layout_profile;
+    apply_dashboard_preference_to_layout(&active_theme_layout, theme->id);
     active_theme_has_background_image = theme->has_background_image;
     memcpy(active_theme_uart_icon_paths, theme->uart_icon_paths, sizeof(active_theme_uart_icon_paths));
     memcpy(active_theme_internal_icon_paths, theme->internal_icon_paths, sizeof(active_theme_internal_icon_paths));
@@ -18891,6 +19221,7 @@ static void apply_selected_theme_index(size_t idx, bool persist)
         outline_color_override = false;
         ui_theme_set_dark_mode(true);
         ui_theme_clear_custom_palette();
+        ui_theme_set_font_profile(UI_THEME_FONT_DEFAULT);
     } else {
         outline_color_override = theme->has_outline_color;
         if (theme->has_outline_color) {
@@ -18898,6 +19229,7 @@ static void apply_selected_theme_index(size_t idx, bool persist)
         }
         ui_theme_set_dark_mode(true);
         ui_theme_set_custom_palette(theme->palette);
+        ui_theme_set_font_profile(theme->has_font_profile ? theme->font_profile : UI_THEME_FONT_DEFAULT);
     }
 
     snprintf(active_theme_id, sizeof(active_theme_id), "%s", theme->id);
@@ -20341,6 +20673,28 @@ static void theme_outline_dropdown_cb(lv_event_t *e)
     apply_selected_theme_index((size_t)selected, true);
 }
 
+static void theme_dashboard_switch_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) {
+        return;
+    }
+
+    if (!theme_popup_dashboard_switch || !lv_obj_is_valid(theme_popup_dashboard_switch)) {
+        return;
+    }
+
+    dashboard_enabled_preference = lv_obj_has_state(theme_popup_dashboard_switch, LV_STATE_CHECKED);
+    save_dashboard_pref_to_nvs(dashboard_enabled_preference);
+
+    size_t active_idx = find_theme_index_by_id(active_theme_id);
+    active_theme_layout = sd_themes[active_idx].layout_profile;
+    apply_dashboard_preference_to_layout(&active_theme_layout, sd_themes[active_idx].id);
+
+    if (status_bar || tab_bar || internal_container) {
+        refresh_runtime_theme_state();
+    }
+}
+
 static void theme_reset_default_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
@@ -20374,6 +20728,7 @@ static void close_theme_popup(void)
     theme_popup_overlay = NULL;
     theme_popup_obj = NULL;
     theme_popup_dropdown = NULL;
+    theme_popup_dashboard_switch = NULL;
     theme_popup_status = NULL;
 }
 
@@ -20399,7 +20754,7 @@ static void show_theme_popup(void)
     lv_obj_add_flag(theme_popup_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     theme_popup_obj = lv_obj_create(theme_popup_overlay);
-    lv_obj_set_size(theme_popup_obj, 430, 330);
+    lv_obj_set_size(theme_popup_obj, 430, 380);
     lv_obj_center(theme_popup_obj);
     ui_theme_apply_modal_card(theme_popup_obj);
     lv_obj_set_style_pad_all(theme_popup_obj, 16, 0);
@@ -20420,6 +20775,29 @@ static void show_theme_popup(void)
     lv_obj_set_width(subtitle, lv_pct(100));
     lv_label_set_long_mode(subtitle, LV_LABEL_LONG_WRAP);
 
+    lv_obj_t *dash_row = lv_obj_create(theme_popup_obj);
+    lv_obj_remove_style_all(dash_row);
+    lv_obj_set_size(dash_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(dash_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(dash_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_top(dash_row, 2, 0);
+    lv_obj_set_style_pad_bottom(dash_row, 2, 0);
+    lv_obj_clear_flag(dash_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *dash_label = lv_label_create(dash_row);
+    lv_label_set_text(dash_label, "Dashboard");
+    lv_obj_set_style_text_font(dash_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(dash_label, ui_theme_color(UI_COLOR_TEXT_PRIMARY), 0);
+
+    theme_popup_dashboard_switch = lv_switch_create(dash_row);
+    lv_obj_set_size(theme_popup_dashboard_switch, 60, 30);
+    if (dashboard_enabled_preference) {
+        lv_obj_add_state(theme_popup_dashboard_switch, LV_STATE_CHECKED);
+    } else {
+        lv_obj_remove_state(theme_popup_dashboard_switch, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(theme_popup_dashboard_switch, theme_dashboard_switch_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
     theme_popup_dropdown = lv_dropdown_create(theme_popup_obj);
     lv_obj_set_width(theme_popup_dropdown, lv_pct(100));
     lv_obj_set_style_text_font(theme_popup_dropdown, &lv_font_montserrat_18, 0);
@@ -20437,13 +20815,7 @@ static void show_theme_popup(void)
     }
     lv_dropdown_set_options(theme_popup_dropdown, options);
 
-    size_t selected_idx = 0;
-    for (size_t i = 0; i < sd_theme_count; ++i) {
-        if (strcmp(sd_themes[i].id, active_theme_id) == 0) {
-            selected_idx = i;
-            break;
-        }
-    }
+    size_t selected_idx = find_theme_index_by_id(active_theme_id);
     lv_dropdown_set_selected(theme_popup_dropdown, (uint16_t)selected_idx);
 
     theme_popup_status = lv_label_create(theme_popup_obj);
