@@ -1,8 +1,12 @@
 #include "ui_theme.h"
+#include <string.h>
 
 static bool s_theme_inited = false;
+static bool s_dark_mode = true;
+static bool s_custom_palette_enabled = false;
+static lv_display_t *s_theme_display = NULL;
 
-static lv_color_t s_palette[UI_COLOR_COUNT] = {
+static const lv_color_t s_palette_dark[UI_COLOR_COUNT] = {
     [UI_COLOR_BG] = LV_COLOR_MAKE(0x0B, 0x11, 0x17),
     [UI_COLOR_BG_LAYER] = LV_COLOR_MAKE(0x0B, 0x11, 0x17),
     [UI_COLOR_SURFACE] = LV_COLOR_MAKE(0x11, 0x18, 0x20),
@@ -21,6 +25,28 @@ static lv_color_t s_palette[UI_COLOR_COUNT] = {
     [UI_COLOR_MODAL_OVERLAY] = LV_COLOR_MAKE(0x00, 0x00, 0x00),
 };
 
+static const lv_color_t s_palette_light[UI_COLOR_COUNT] = {
+    [UI_COLOR_BG] = LV_COLOR_MAKE(0x24, 0x34, 0x45),
+    [UI_COLOR_BG_LAYER] = LV_COLOR_MAKE(0x2A, 0x3C, 0x50),
+    [UI_COLOR_SURFACE] = LV_COLOR_MAKE(0x31, 0x46, 0x5D),
+    [UI_COLOR_SURFACE_ALT] = LV_COLOR_MAKE(0x39, 0x52, 0x6B),
+    [UI_COLOR_CARD] = LV_COLOR_MAKE(0x32, 0x48, 0x60),
+    [UI_COLOR_BORDER] = LV_COLOR_MAKE(0x57, 0x72, 0x8D),
+    [UI_COLOR_TEXT_PRIMARY] = LV_COLOR_MAKE(0xF2, 0xF6, 0xFB),
+    [UI_COLOR_TEXT_SECONDARY] = LV_COLOR_MAKE(0xD2, 0xDE, 0xEA),
+    [UI_COLOR_TEXT_MUTED] = LV_COLOR_MAKE(0xA4, 0xB4, 0xC4),
+    [UI_COLOR_ACCENT_PRIMARY] = LV_COLOR_MAKE(0x4E, 0xA0, 0xF7),
+    [UI_COLOR_ACCENT_SECONDARY] = LV_COLOR_MAKE(0x4E, 0xA0, 0xF7),
+    [UI_COLOR_SUCCESS] = LV_COLOR_MAKE(0x60, 0xB8, 0x88),
+    [UI_COLOR_WARNING] = LV_COLOR_MAKE(0xD0, 0x9A, 0x58),
+    [UI_COLOR_ERROR] = LV_COLOR_MAKE(0xCC, 0x75, 0x82),
+    [UI_COLOR_INFO] = LV_COLOR_MAKE(0x4E, 0xA0, 0xF7),
+    [UI_COLOR_MODAL_OVERLAY] = LV_COLOR_MAKE(0x00, 0x00, 0x00),
+};
+
+static lv_color_t s_palette[UI_COLOR_COUNT];
+static lv_color_t s_custom_palette[UI_COLOR_COUNT];
+
 static ui_theme_styles_t s_styles;
 
 static const lv_style_prop_t s_button_transition_props[] = {
@@ -32,6 +58,37 @@ static const lv_style_prop_t s_button_transition_props[] = {
 };
 
 static lv_style_transition_dsc_t s_button_transition;
+
+static void update_palette_from_mode(void)
+{
+    if (s_custom_palette_enabled) {
+        memcpy(s_palette, s_custom_palette, sizeof(s_palette));
+        return;
+    }
+
+    const lv_color_t *src = s_dark_mode ? s_palette_dark : s_palette_light;
+    memcpy(s_palette, src, sizeof(s_palette));
+}
+
+static void reset_all_styles(void)
+{
+    lv_style_reset(&s_styles.page);
+    lv_style_reset(&s_styles.card);
+    lv_style_reset(&s_styles.section);
+    lv_style_reset(&s_styles.appbar);
+    lv_style_reset(&s_styles.tabbar);
+    lv_style_reset(&s_styles.button_primary);
+    lv_style_reset(&s_styles.button_secondary);
+    lv_style_reset(&s_styles.button_danger);
+    lv_style_reset(&s_styles.button_pressed);
+    lv_style_reset(&s_styles.button_disabled);
+    lv_style_reset(&s_styles.icon_button);
+    lv_style_reset(&s_styles.chip);
+    lv_style_reset(&s_styles.metric_card);
+    lv_style_reset(&s_styles.list_row);
+    lv_style_reset(&s_styles.modal_overlay);
+    lv_style_reset(&s_styles.modal_card);
+}
 
 static void init_button_style(lv_style_t *style, lv_color_t bg, lv_color_t border, lv_color_t text)
 {
@@ -59,12 +116,19 @@ static void init_button_style(lv_style_t *style, lv_color_t bg, lv_color_t borde
 
 void ui_theme_init(lv_display_t *disp)
 {
-    if (s_theme_inited) {
-        return;
-    }
-
     if (disp == NULL) {
         disp = lv_display_get_default();
+    }
+    if (disp != NULL) {
+        s_theme_display = disp;
+    } else if (s_theme_display != NULL) {
+        disp = s_theme_display;
+    }
+
+    update_palette_from_mode();
+
+    if (s_theme_inited) {
+        reset_all_styles();
     }
 
     if (disp != NULL) {
@@ -72,7 +136,7 @@ void ui_theme_init(lv_display_t *disp)
             disp,
             s_palette[UI_COLOR_ACCENT_PRIMARY],
             s_palette[UI_COLOR_ACCENT_SECONDARY],
-            true,
+            s_dark_mode,
             &lv_font_montserrat_18);
         if (theme != NULL) {
             lv_display_set_theme(disp, theme);
@@ -281,6 +345,66 @@ void ui_theme_init(lv_display_t *disp)
 bool ui_theme_is_initialized(void)
 {
     return s_theme_inited;
+}
+
+void ui_theme_set_dark_mode(bool enabled)
+{
+    if (s_dark_mode == enabled && s_theme_inited) {
+        return;
+    }
+
+    s_dark_mode = enabled;
+    update_palette_from_mode();
+
+    if (s_theme_inited) {
+        ui_theme_init(s_theme_display);
+        lv_obj_report_style_change(NULL);
+    }
+}
+
+bool ui_theme_is_dark_mode(void)
+{
+    return s_dark_mode;
+}
+
+void ui_theme_set_custom_palette(const lv_color_t palette[UI_COLOR_COUNT])
+{
+    if (!palette) {
+        return;
+    }
+
+    memcpy(s_custom_palette, palette, sizeof(s_custom_palette));
+    s_custom_palette_enabled = true;
+    update_palette_from_mode();
+
+    if (s_theme_inited) {
+        ui_theme_init(s_theme_display);
+        lv_obj_report_style_change(NULL);
+    }
+}
+
+void ui_theme_clear_custom_palette(void)
+{
+    if (!s_custom_palette_enabled) {
+        return;
+    }
+
+    s_custom_palette_enabled = false;
+    update_palette_from_mode();
+
+    if (s_theme_inited) {
+        ui_theme_init(s_theme_display);
+        lv_obj_report_style_change(NULL);
+    }
+}
+
+void ui_theme_get_default_palette(lv_color_t out_palette[UI_COLOR_COUNT])
+{
+    if (!out_palette) {
+        return;
+    }
+
+    memcpy(out_palette, s_palette_dark, sizeof(s_palette_dark));
 }
 
 lv_color_t ui_theme_color(ui_color_token_t token)

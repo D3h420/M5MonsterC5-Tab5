@@ -65,6 +65,11 @@ typedef struct {
 
 void ui_theme_init(lv_display_t *disp);
 bool ui_theme_is_initialized(void);
+void ui_theme_set_dark_mode(bool enabled);
+bool ui_theme_is_dark_mode(void);
+void ui_theme_set_custom_palette(const lv_color_t palette[UI_COLOR_COUNT]);
+void ui_theme_clear_custom_palette(void);
+void ui_theme_get_default_palette(lv_color_t out_palette[UI_COLOR_COUNT]);
 
 lv_color_t ui_theme_color(ui_color_token_t token);
 

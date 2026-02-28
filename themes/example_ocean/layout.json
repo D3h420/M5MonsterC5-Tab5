@@ -1,0 +1,18 @@
+{
+  "uart_tiles": {
+    "wifi_scan_attack": { "x": 0,   "y": 0,   "w": 246, "h": 182 },
+    "global_wifi_attacks": { "x": 260, "y": 0,   "w": 246, "h": 182 },
+    "compromised_data": { "x": 520, "y": 0,   "w": 246, "h": 182 },
+    "deauth_detector": { "x": 0,   "y": 196, "w": 246, "h": 182 },
+    "bluetooth": { "x": 260, "y": 196, "w": 246, "h": 182 },
+    "network_observer": { "x": 520, "y": 196, "w": 246, "h": 182 },
+    "karma": { "x": 0,   "y": 392, "w": 246, "h": 182 }
+  },
+  "internal_tiles": {
+    "settings": { "x": 0,   "y": 0, "w": 246, "h": 182 },
+    "adhoc_portal": { "x": 260, "y": 0, "w": 246, "h": 182 }
+  },
+  "dashboard": {
+    "enabled": true
+  }
+}
