@@ -23,6 +23,8 @@ Supported keys:
 - `modal_overlay`
 - `outline_color`
 - `font` (`default`, `compact`, `large`, `terminal`)
+- `icon_tint` (hex color for PNG icon recolor)
+- `icon_tint_opa` (`0..255`, tint strength; `255` = full recolor)
 - `background_image` (relative file path in this folder, e.g. `bg.jpg`)
 
 Color format: `RRGGBB`, `#RRGGBB`, or `0xRRGGBB`
@@ -82,6 +84,8 @@ Put PNG icons (transparent background) in:
 Runtime behavior:
 - Icons are auto-scaled to the tile icon box (preserve aspect ratio, contain mode).
 - Recommended source size: square PNG, e.g. `96x96`.
+- If `icon_tint` is set in `theme.ini`, PNG icons are recolored using `icon_tint_opa`.
+  Useful for monochrome icons (e.g. black -> white/green on dark themes).
 
 Supported main-tile icon filenames:
 - `wifiscanattack.png`

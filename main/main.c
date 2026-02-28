@@ -695,6 +695,9 @@ typedef struct {
     ui_theme_font_profile_t font_profile;
     bool has_outline_color;
     lv_color_t outline_color;
+    bool has_icon_tint;
+    lv_color_t icon_tint;
+    uint8_t icon_tint_opa;
     bool has_background_image;
     char background_image_path[MAX_THEME_PATH_LEN];
     char uart_icon_paths[UART_MAIN_TILE_COUNT][MAX_THEME_PATH_LEN];
@@ -711,6 +714,9 @@ static bool active_theme_has_background_image = false;
 static char active_theme_background_image[MAX_THEME_PATH_LEN];
 static char active_theme_uart_icon_paths[UART_MAIN_TILE_COUNT][MAX_THEME_PATH_LEN];
 static char active_theme_internal_icon_paths[INTERNAL_MAIN_TILE_COUNT][MAX_THEME_PATH_LEN];
+static bool active_theme_icon_tint_enabled = false;
+static lv_color_t active_theme_icon_tint;
+static uint8_t active_theme_icon_tint_opa = LV_OPA_COVER;
 static theme_layout_profile_t active_theme_layout = {0};
 static theme_tile_binding_t theme_binding_grove = {.is_internal = false};
 static theme_tile_binding_t theme_binding_usb = {.is_internal = false};
@@ -1334,7 +1340,6 @@ static void apply_theme_layout_to_binding(theme_tile_binding_t *binding);
 static void apply_theme_background_to_tile_root(lv_obj_t *tile_root);
 static void apply_theme_icons_to_binding(theme_tile_binding_t *binding);
 static void apply_theme_text_to_binding(theme_tile_binding_t *binding);
-static void rebuild_all_dashboard_panels_for_theme(void);
 static lv_obj_t *create_live_dashboard_panel(lv_obj_t *parent, tab_context_t *ctx);
 static void update_live_dashboard_for_ctx(tab_context_t *ctx);
 static int count_local_handshake_files(void);
@@ -18333,7 +18338,12 @@ static bool try_build_theme_icon_image(lv_obj_t *icon_row, const char *src, lv_c
     lv_obj_set_size(icon_img, icon_box, icon_box);
     lv_image_set_inner_align(icon_img, LV_IMAGE_ALIGN_CONTAIN);
     lv_image_set_antialias(icon_img, true);
-    lv_obj_set_style_image_recolor_opa(icon_img, LV_OPA_TRANSP, 0);
+    if (active_theme_icon_tint_enabled && active_theme_icon_tint_opa > 0) {
+        lv_obj_set_style_image_recolor(icon_img, active_theme_icon_tint, 0);
+        lv_obj_set_style_image_recolor_opa(icon_img, active_theme_icon_tint_opa, 0);
+    } else {
+        lv_obj_set_style_image_recolor_opa(icon_img, LV_OPA_TRANSP, 0);
+    }
     lv_obj_center(icon_img);
     return true;
 }
@@ -18554,75 +18564,6 @@ static void apply_theme_layout_to_binding(theme_tile_binding_t *binding)
     apply_theme_dashboard_visibility(binding);
 }
 
-static tab_context_t *theme_binding_ctx(theme_tile_binding_t *binding)
-{
-    if (binding == &theme_binding_grove) return &grove_ctx;
-    if (binding == &theme_binding_usb) return &usb_ctx;
-    if (binding == &theme_binding_mbus) return &mbus_ctx;
-    if (binding == &theme_binding_internal) return &internal_ctx;
-    return NULL;
-}
-
-static void clear_dashboard_widget_refs(tab_context_t *ctx)
-{
-    if (!ctx) {
-        return;
-    }
-
-    ctx->dashboard_clock_value = NULL;
-    ctx->dashboard_clock_meta = NULL;
-    ctx->dashboard_scan_value = NULL;
-    ctx->dashboard_handshake_value = NULL;
-    ctx->dashboard_gps_value = NULL;
-    ctx->dashboard_uptime_value = NULL;
-    ctx->dashboard_sd_status_value = NULL;
-    ctx->dashboard_sd_percent_value = NULL;
-    ctx->dashboard_wpa_sec_value = NULL;
-    ctx->dashboard_vendors_value = NULL;
-    ctx->dashboard_sd_arc = NULL;
-    ctx->dashboard_quote_value = NULL;
-}
-
-static void rebuild_dashboard_panel_for_binding(theme_tile_binding_t *binding)
-{
-    if (!binding || !binding_obj_valid(binding->root)) {
-        return;
-    }
-
-    tab_context_t *ctx = theme_binding_ctx(binding);
-    if (!ctx) {
-        return;
-    }
-
-    clear_dashboard_widget_refs(ctx);
-
-    if (binding_obj_valid(binding->dashboard_panel)) {
-        lv_obj_del(binding->dashboard_panel);
-        binding->dashboard_panel = NULL;
-    }
-
-    lv_obj_t *panel = create_live_dashboard_panel(binding->root, ctx);
-    if (panel) {
-        lv_obj_set_width(panel, lv_pct(100));
-    }
-    binding->dashboard_panel = panel;
-    apply_theme_dashboard_visibility(binding);
-}
-
-static void rebuild_all_dashboard_panels_for_theme(void)
-{
-    theme_tile_binding_t *bindings[] = {
-        &theme_binding_grove,
-        &theme_binding_usb,
-        &theme_binding_mbus,
-        &theme_binding_internal,
-    };
-
-    for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); ++i) {
-        rebuild_dashboard_panel_for_binding(bindings[i]);
-    }
-}
-
 static void apply_theme_assets_to_all_bindings(void)
 {
     theme_tile_binding_t *bindings[] = {
@@ -18686,7 +18627,6 @@ static void refresh_runtime_theme_state(void)
     }
 
     apply_button_outline_theme_to_all_tiles();
-    rebuild_all_dashboard_panels_for_theme();
     apply_theme_assets_to_all_bindings();
     update_tab_styles();
     update_live_dashboard_for_ctx(&internal_ctx);
@@ -18839,6 +18779,22 @@ static bool parse_hex_color_value(const char *value, lv_color_t *out)
     }
 
     *out = lv_color_hex((uint32_t)rgb);
+    return true;
+}
+
+static bool parse_uint8_value(const char *value, uint8_t *out)
+{
+    if (!value || !out) {
+        return false;
+    }
+
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (!end || *end != '\0' || parsed < 0 || parsed > 255) {
+        return false;
+    }
+
+    *out = (uint8_t)parsed;
     return true;
 }
 
@@ -19107,6 +19063,9 @@ static bool parse_theme_ini_file(const char *config_path,
     out_theme->font_profile = UI_THEME_FONT_DEFAULT;
     out_theme->has_outline_color = false;
     out_theme->outline_color = lv_color_hex(0xFF2DA6);
+    out_theme->has_icon_tint = false;
+    out_theme->icon_tint = lv_color_hex(0xFFFFFF);
+    out_theme->icon_tint_opa = LV_OPA_COVER;
 
     char line[192];
     while (fgets(line, sizeof(line), f)) {
@@ -19136,6 +19095,23 @@ static bool parse_theme_ini_file(const char *config_path,
             if (parse_hex_color_value(val, &parsed)) {
                 out_theme->has_outline_color = true;
                 out_theme->outline_color = parsed;
+            }
+            continue;
+        }
+
+        if (strcmp(key, "icon_tint") == 0) {
+            lv_color_t parsed;
+            if (parse_hex_color_value(val, &parsed)) {
+                out_theme->has_icon_tint = true;
+                out_theme->icon_tint = parsed;
+            }
+            continue;
+        }
+
+        if (strcmp(key, "icon_tint_opa") == 0 || strcmp(key, "icon_tint_alpha") == 0) {
+            uint8_t parsed_opa = 0;
+            if (parse_uint8_value(val, &parsed_opa)) {
+                out_theme->icon_tint_opa = parsed_opa;
             }
             continue;
         }
@@ -19188,6 +19164,9 @@ static void refresh_sd_themes_cache(void)
     sd_themes[0].font_profile = UI_THEME_FONT_DEFAULT;
     sd_themes[0].has_outline_color = true;
     sd_themes[0].outline_color = lv_color_hex(0xFF2DA6);
+    sd_themes[0].has_icon_tint = false;
+    sd_themes[0].icon_tint = lv_color_hex(0xFFFFFF);
+    sd_themes[0].icon_tint_opa = LV_OPA_COVER;
     sd_themes[0].has_background_image = false;
     memset(sd_themes[0].uart_icon_paths, 0, sizeof(sd_themes[0].uart_icon_paths));
     memset(sd_themes[0].internal_icon_paths, 0, sizeof(sd_themes[0].internal_icon_paths));
@@ -19290,6 +19269,9 @@ static void apply_selected_theme_index(size_t idx, bool persist)
 
     if (strcmp(theme->id, "default") == 0) {
         outline_color_override = false;
+        active_theme_icon_tint_enabled = false;
+        active_theme_icon_tint = lv_color_hex(0xFFFFFF);
+        active_theme_icon_tint_opa = LV_OPA_COVER;
         ui_theme_set_dark_mode(true);
         ui_theme_clear_custom_palette();
         ui_theme_set_font_profile(UI_THEME_FONT_DEFAULT);
@@ -19298,6 +19280,9 @@ static void apply_selected_theme_index(size_t idx, bool persist)
         if (theme->has_outline_color) {
             outline_override_color = theme->outline_color;
         }
+        active_theme_icon_tint_enabled = theme->has_icon_tint;
+        active_theme_icon_tint = theme->icon_tint;
+        active_theme_icon_tint_opa = theme->icon_tint_opa;
         ui_theme_set_dark_mode(true);
         ui_theme_set_custom_palette(theme->palette);
         ui_theme_set_font_profile(theme->has_font_profile ? theme->font_profile : UI_THEME_FONT_DEFAULT);
