@@ -84,6 +84,8 @@ Put PNG icons (transparent background) in:
 Runtime behavior:
 - Icons are auto-scaled to the tile icon box (preserve aspect ratio, contain mode).
 - Recommended source size: square PNG, e.g. `96x96` (prefer <= `128x128` for smooth tab switching).
+- Hard limits in firmware for stability: max `128x128` and max `20 KB` per icon.
+  If exceeded, firmware skips that PNG and falls back to built-in LVGL symbol (no flicker).
 - If `icon_tint` is set in `theme.ini`, PNG icons are recolored using `icon_tint_opa`.
   Useful for monochrome icons (e.g. black -> white/green on dark themes).
 

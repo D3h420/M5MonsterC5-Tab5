@@ -652,6 +652,8 @@ static lv_color_t outline_override_color;
 #define THEME_CONFIG_NAME "theme.ini"
 #define THEME_LAYOUT_FILE_NAME "layout.json"
 #define THEME_ICONS_DIR_NAME "icons"
+#define THEME_ICON_MAX_DIM_PX 128
+#define THEME_ICON_MAX_FILE_BYTES (20 * 1024)
 #define UART_MAIN_TILE_COUNT 7
 #define INTERNAL_MAIN_TILE_COUNT 2
 #define MAX_THEME_BINDING_TILES UART_MAIN_TILE_COUNT
@@ -8379,12 +8381,8 @@ static void create_uart_tiles_in_container(lv_obj_t *container, lv_obj_t **tiles
     if (*tiles_ptr) {
         // Tiles already exist, just show them
         lv_obj_clear_flag(*tiles_ptr, LV_OBJ_FLAG_HIDDEN);
-        if (binding) {
-            apply_theme_background_to_tile_root(binding->root);
-            apply_theme_layout_to_binding(binding);
-            apply_theme_icons_to_binding(binding);
-            apply_theme_text_to_binding(binding);
-        }
+        // Do not reapply theme assets on each tab switch.
+        // Theme assets are refreshed centrally on theme apply/reset.
         update_live_dashboard_for_ctx(ctx);
         return;
     }
@@ -8554,12 +8552,8 @@ static void show_internal_tiles(void)
     if (internal_tiles) {
         // Already exists, just show it
         lv_obj_clear_flag(internal_tiles, LV_OBJ_FLAG_HIDDEN);
-        if (binding) {
-            apply_theme_background_to_tile_root(binding->root);
-            apply_theme_layout_to_binding(binding);
-            apply_theme_icons_to_binding(binding);
-            apply_theme_text_to_binding(binding);
-        }
+        // Do not reapply theme assets on each tab switch.
+        // Theme assets are refreshed centrally on theme apply/reset.
         update_live_dashboard_for_ctx(&internal_ctx);
         return;
     }
@@ -18350,8 +18344,26 @@ static bool try_build_theme_icon_image(lv_obj_t *icon_row, const char *src, lv_c
         return false;
     }
 
+    const char *fs_path = src;
+    if (src[0] != '\0' && src[1] == ':' && src[2] == '/') {
+        fs_path = src + 2;  // Strip LVGL drive prefix for POSIX stat
+    }
+
+    struct stat st;
+    if (stat(fs_path, &st) == 0 && S_ISREG(st.st_mode)) {
+        if (st.st_size > THEME_ICON_MAX_FILE_BYTES) {
+            ESP_LOGW(TAG, "Theme icon too large (%ld B): %s", (long)st.st_size, fs_path);
+            return false;
+        }
+    }
+
     lv_image_header_t header;
     if (lv_image_decoder_get_info(src, &header) != LV_RESULT_OK) {
+        return false;
+    }
+    if (header.w > THEME_ICON_MAX_DIM_PX || header.h > THEME_ICON_MAX_DIM_PX) {
+        ESP_LOGW(TAG, "Theme icon dimensions too large (%dx%d): %s",
+                 (int)header.w, (int)header.h, src);
         return false;
     }
 
